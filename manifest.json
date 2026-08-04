@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "FocusFlow - Focus Checkpoints for YouTube",
+  "version": "0.2.0",
+  "description": "Breaks long YouTube videos into short chunks and pauses for a quick comprehension question at each checkpoint.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "FocusFlow"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "src/content/mainWorld.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "src/content/captions.js",
+        "src/content/questionBank.js",
+        "src/content/questions.js",
+        "src/content/validate.js",
+        "src/content/ai.js",
+        "src/content/overlay.js",
+        "src/content/content.js"
+      ],
+      "css": [
+        "src/content/overlay.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "focusflow-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "author": "Yihan Sun",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.26.0"
+  }
+}

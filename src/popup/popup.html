@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FocusFlow</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #18181b;
+        color: #fafafa;
+      }
+
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 18px;
+        box-sizing: border-box;
+        background: #18181b;
+      }
+
+      h1 { margin: 0 0 4px; font-size: 20px; }
+      p { margin: 0 0 16px; color: #a1a1aa; font-size: 13px; line-height: 1.4; }
+
+      label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 14px 0;
+        font-size: 14px;
+      }
+
+      .stack { display: block; }
+      .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+
+      input[type="number"] {
+        width: 68px;
+        padding: 7px;
+        border: 1px solid #3f3f46;
+        border-radius: 8px;
+        background: #27272a;
+        color: #fafafa;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 8px;
+        padding: 8px;
+        border: 1px solid #3f3f46;
+        border-radius: 8px;
+        background: #27272a;
+        color: #fafafa;
+      }
+
+      input[type="range"] { flex: 1; accent-color: #fafafa; }
+      input[type="checkbox"] { width: 18px; height: 18px; accent-color: #fafafa; }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        background: #fafafa;
+        color: #18181b;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .toggle { padding: 8px 14px; }
+      .toggle[aria-pressed="false"] { background: #3f3f46; color: #fafafa; }
+      .primary { width: 100%; padding: 11px 14px; margin: 8px 0 10px; }
+      .secondary { width: 100%; padding: 10px 14px; margin: 0 0 10px; background: #27272a; color: #fafafa; border: 1px solid #52525b; }
+
+      .hint { display: block; margin-top: 4px; color: #a1a1aa; font-size: 12px; line-height: 1.35; }
+
+      .status-card {
+        margin-top: 12px;
+        padding: 12px;
+        border: 1px solid #3f3f46;
+        border-radius: 12px;
+        background: #27272a;
+        font-size: 12px;
+      }
+
+      .status-card h2 { margin: 0 0 8px; font-size: 14px; }
+      .big-readout { margin: 4px 0 8px; font-size: 20px; font-weight: 800; }
+      .progress-track { position: relative; height: 10px; margin: 10px 0; overflow: hidden; border-radius: 999px; background: #3f3f46; }
+      .progress-fill { height: 100%; width: 0%; border-radius: inherit; background: #4ade80; }
+      .progress-tick { position: absolute; top: 0; width: 2px; height: 100%; background: #fafafa; opacity: 0.9; }
+      .muted { color: #a1a1aa; font-size: 12px; }
+      .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+      .status-grid span:nth-child(odd) { color: #a1a1aa; }
+      #saveStatus, #testStatus { min-height: 18px; color: #4ade80; font-size: 12px; }
+      details { margin-top: 8px; color: #a1a1aa; font-size: 12px; }
+      summary { cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1>FocusFlow</h1>
+    <p>Phase 2 is active: YouTube captions plus offline questions. AI is off.</p>
+
+    <button id="testCheckpoint" class="primary" type="button">Test checkpoint now</button>
+    <button id="viewTranscript" class="secondary" type="button">View transcript</button>
+    <button id="showPosition" class="secondary" type="button">Show position on video</button>
+    <div id="testStatus" role="status" aria-live="polite"></div>
+
+    <section class="status-card" aria-live="polite">
+      <h2>Where you are</h2>
+      <div id="progressReadout" class="big-readout">--:-- / --:--</div>
+      <div id="progressTrack" class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+      <div id="progressLine" class="muted">Open a YouTube video to see progress.</div>
+      <div id="playState" class="muted"></div>
+    </section>
+
+    <label>
+      <span>Extension</span>
+      <button id="enabled" class="toggle" type="button" aria-pressed="true">On</button>
+    </label>
+
+    <label class="stack">
+      Chunk length: <strong><span id="chunkValue">3</span> min</strong>
+      <span class="row">
+        <input id="chunkRange" type="range" min="1" max="20" step="1">
+        <input id="chunkMinutes" type="number" min="1" max="20" step="1">
+      </span>
+    </label>
+
+    <label>
+      <span>Skip videos shorter than</span>
+      <input id="minVideoMinutes" type="number" min="0" step="1">
+    </label>
+
+    <label>
+      <span>Auto-pause at checkpoints</span>
+      <input id="autoPause" type="checkbox">
+    </label>
+
+    <details>
+      <summary>Later: AI proxy settings</summary>
+      <label>
+        <span>Use AI questions</span>
+        <input id="useAI" type="checkbox">
+      </label>
+      <label class="stack">
+        Proxy Worker URL
+        <input id="proxyUrl" type="text" placeholder="https://focusflow-proxy.example.workers.dev">
+        <span class="hint">Dormant in this build unless host permissions are re-enabled.</span>
+      </label>
+    </details>
+
+    <section class="status-card" aria-live="polite">
+      <h2>Current video status</h2>
+      <div id="videoStatus" class="status-grid"></div>
+    </section>
+
+    <div id="saveStatus" role="status" aria-live="polite"></div>
+    <script src="../shared/format.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

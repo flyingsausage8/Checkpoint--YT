@@ -1,0 +1,15 @@
+name = "focusflow-proxy"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# After running:
+#   npx wrangler kv namespace create RATE_LIMIT
+# uncomment this block and replace the placeholder id with the id Wrangler prints.
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT"
+# id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+
+[vars]
+# Replace the placeholder with your installed extension id, for example:
+# ALLOWED_ORIGINS = "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+ALLOWED_ORIGINS = "chrome-extension://PASTE_YOUR_EXTENSION_ID_HERE"

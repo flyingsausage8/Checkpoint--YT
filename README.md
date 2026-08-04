@@ -1,2 +1,109 @@
 # Checkpoint--YT
+
 Chrome extension that breaks YouTube videos into short sections with a quick check-in question after each one — built to help people with ADHD (or anyone) actually finish what they start watching.
+
+Built by Yihan Sun.
+
+The extension ships under the display name **FocusFlow**; this repository is `Checkpoint--YT`.
+
+FocusFlow is a Chrome extension for people who drift off during long YouTube videos. It splits a video into short chunks, pauses at each checkpoint, and asks a quick multiple-choice or true/false question about the section you just watched.
+
+This build is Phase 1 + Phase 2 only: chunking, pausing, captions, overlays, and offline questions. No proxy, API key, Cloudflare account, or non-YouTube network setup is required.
+
+## Try it in 3 minutes
+
+1. Open Chrome and go to `chrome://extensions`.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and select the `focusflow` folder.
+4. Open any normal YouTube video longer than 4 minutes.
+5. Click the FocusFlow extension icon.
+6. Click **Test checkpoint now** to show the overlay immediately.
+7. Click **View transcript** to open the transcript page, or **Show position on video** to see your current section in a toast.
+
+Defaults are testing-friendly: checkpoints every 3 minutes, and videos shorter than 4 minutes are skipped. You can raise those later in the popup.
+
+After editing files, return to `chrome://extensions` and click the reload button on FocusFlow.
+
+## How to tell if captions are working
+
+Open the FocusFlow popup while on a YouTube watch page. The **Current video status** box shows:
+
+- **Video ID**: the detected YouTube id.
+- **Length**: detected video duration.
+- **Checkpoints**: how many pauses FocusFlow will create.
+- **Captions**:
+  - `timedtext` means FocusFlow found YouTube's caption track directly. This is the best path.
+  - `panel` means it used YouTube's visible transcript panel as a fallback.
+  - `none` means no captions were found, so FocusFlow uses hardcoded self-check questions.
+- **Cues**: how many transcript snippets were extracted.
+
+## What to try breaking
+
+- A video with captions.
+- A video without captions.
+- Navigating between videos without reloading the page.
+- Fullscreen mode.
+- Seeking backwards after answering a checkpoint.
+- A very short video under 4 minutes.
+- A live stream or Short.
+
+
+## Transcript and playback position tools
+
+The popup has three testing buttons:
+
+- **Test checkpoint now** opens the checkpoint overlay immediately.
+- **View transcript** opens a full-page transcript viewer. Timestamp buttons jump the YouTube tab to that moment, the search box filters text, and checkpoint dividers show which transcript section feeds each question.
+- **Show position on video** displays the current time, section, and next checkpoint directly over the video, useful in fullscreen.
+
+The popup also includes a live **Where you are** readout with current time, percent, play/pause state, and checkpoint tick marks.
+
+FocusFlow uses the Chrome `tabs` permission so the popup and transcript page can find the current YouTube tab, open the transcript page, and send seek/progress messages to the original tab. It still only has host permission for YouTube in this AI-free build.
+
+## File map
+
+- `manifest.json` tells Chrome which scripts to load, where the popup lives, permissions, and icons.
+- `src/content/mainWorld.js` runs in YouTube's page world and discovers caption track URLs.
+- `src/content/captions.js` fetches or reads transcript text.
+- `src/content/questionBank.js` contains hardcoded ADHD-friendly fallback questions.
+- `src/content/questions.js` builds local transcript-derived questions and falls back to the bank.
+- `src/content/validate.js` validates question objects before they reach the overlay.
+- `src/content/ai.js` is dormant support for a future proxy-backed AI mode.
+- `src/content/overlay.js` builds the checkpoint card shown over the video.
+- `src/content/overlay.css` styles the checkpoint card and toast.
+- `src/content/content.js` coordinates video detection, checkpoints, captions, storage status, transcript/progress messages, and popup test messages.
+- `src/popup/popup.html` is the settings, status, transcript, and playback-position popup.
+- `src/popup/popup.js` saves settings, shows status/progress, opens the transcript page, and sends **Test checkpoint now** messages.
+- `src/transcript/transcript.html` and `src/transcript/transcript.js` show the full transcript, search, copy/download, and timestamp seeking.
+- `src/shared/format.js` formats playback times for extension pages.
+- `icons/` contains the extension icons.
+- `proxy/` contains the optional Cloudflare Worker backend for later AI questions.
+
+## How captions work
+
+FocusFlow tries two caption strategies because YouTube does not provide a stable public transcript API for extensions.
+
+First, it asks YouTube for the timed caption track URL and fetches the transcript directly. This is fast and invisible.
+
+If that fails, it tries to open YouTube's own transcript panel and read the visible transcript rows from the page. This is slower, but it can keep working when direct caption URLs are unavailable.
+
+If neither strategy finds captions, FocusFlow still shows useful hardcoded check-in questions.
+
+## Known limitations
+
+- Videos without captions cannot produce specific transcript-based questions.
+- YouTube may change its page structure or internal events.
+- Live streams and Shorts are unsupported.
+- Ads may interfere with timing or playback state.
+
+## Later: turning on AI
+
+AI is not required and is not active in this build. The extension defaults `useAI` to off, the Worker host permission is removed, and FocusFlow works with offline questions immediately.
+
+When you are ready, `proxy/` contains a Cloudflare Worker that keeps the OpenAI API key out of the extension. The architecture is:
+
+**FocusFlow extension -> your Cloudflare Worker -> OpenAI**
+
+Before enabling AI, add `https://*.workers.dev/*` back to `manifest.json` host permissions, deploy the Worker, set `OPENAI_API_KEY` as a Worker secret, allowlist your extension id, and paste the Worker URL into the popup. See `proxy/README.md` for the full guide.
+
+Set a hard monthly spending limit in your OpenAI billing dashboard before enabling AI. Code-level rate limits help, but a billing cap is the final protection against surprise costs.

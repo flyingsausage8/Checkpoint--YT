@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FocusFlow Transcript</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #18181b;
+        color: #fafafa;
+      }
+
+      body {
+        margin: 0;
+        background: #18181b;
+        color: #fafafa;
+      }
+
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        line-height: 1.2;
+      }
+
+      .meta, .message, .confirm {
+        color: #a1a1aa;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin: 20px 0;
+      }
+
+      input {
+        flex: 1;
+        min-width: 220px;
+        padding: 11px 13px;
+        border: 1px solid #3f3f46;
+        border-radius: 10px;
+        background: #27272a;
+        color: #fafafa;
+        font: inherit;
+      }
+
+      button {
+        padding: 10px 15px;
+        border: 0;
+        border-radius: 999px;
+        background: #fafafa;
+        color: #18181b;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button.time {
+        flex: 0 0 auto;
+        min-width: 70px;
+        padding: 7px 10px;
+        border: 1px solid #52525b;
+        background: transparent;
+        color: #fafafa;
+      }
+
+      .list {
+        max-height: calc(100vh - 260px);
+        overflow: auto;
+        border: 1px solid #3f3f46;
+        border-radius: 14px;
+        background: #202024;
+      }
+
+      .row {
+        display: flex;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid #34343a;
+        background: #27272a;
+        line-height: 1.5;
+      }
+
+      .row:last-child { border-bottom: 0; }
+      .text { white-space: pre-wrap; }
+      mark { border-radius: 3px; background: #facc15; color: #18181b; }
+
+      .divider {
+        padding: 10px 14px;
+        border-bottom: 1px solid #3f3f46;
+        background: #18181b;
+        color: #4ade80;
+        font-weight: 700;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="title">FocusFlow Transcript</h1>
+      <div id="meta" class="meta"></div>
+      <div class="toolbar">
+        <input id="filter" type="search" placeholder="Search transcript">
+        <button id="copyAll" type="button">Copy all</button>
+        <button id="download" type="button">Download .txt</button>
+      </div>
+      <div id="confirm" class="confirm" role="status" aria-live="polite"></div>
+      <div id="message" class="message"></div>
+      <div id="list" class="list"></div>
+    </main>
+    <script src="../shared/format.js"></script>
+    <script src="transcript.js"></script>
+  </body>
+</html>
