@@ -8,7 +8,7 @@ The extension ships under the display name **FocusFlow**; this repository is `Ch
 
 FocusFlow is a Chrome extension for people who drift off during long YouTube videos. It splits a video into short chunks, pauses at each checkpoint, and asks a quick multiple-choice or true/false question about the section you just watched.
 
-This build is Phase 1 + Phase 2 only: chunking, pausing, captions, overlays, and offline questions. No proxy, API key, Cloudflare account, or non-YouTube network setup is required.
+This build is Phase 1 + Phase 2 only: chunking, pausing, captions, overlays, and offline questions. No proxy, API key, Azure account, or non-YouTube network setup is required.
 
 ## Try it in 3 minutes
 
@@ -77,7 +77,7 @@ FocusFlow uses the Chrome `tabs` permission so the popup and transcript page can
 - `src/transcript/transcript.html` and `src/transcript/transcript.js` show the full transcript, search, copy/download, and timestamp seeking.
 - `src/shared/format.js` formats playback times for extension pages.
 - `icons/` contains the extension icons.
-- `proxy/` contains the optional Cloudflare Worker backend for later AI questions.
+- `backend/` contains the optional Azure Functions backend for later AI questions.
 
 ## How captions work
 
@@ -98,12 +98,26 @@ If neither strategy finds captions, FocusFlow still shows useful hardcoded check
 
 ## Later: turning on AI
 
-AI is not required and is not active in this build. The extension defaults `useAI` to off, the Worker host permission is removed, and FocusFlow works with offline questions immediately.
+AI is not required and is not active in this build. The extension defaults `useAI` to off, Azure host permission is not present, and FocusFlow works with offline questions immediately.
 
-When you are ready, `proxy/` contains a Cloudflare Worker that keeps the OpenAI API key out of the extension. The architecture is:
+When you are ready, `backend/` contains a simple Azure Functions proxy that keeps the Azure OpenAI key out of the extension. The architecture is:
 
-**FocusFlow extension -> your Cloudflare Worker -> OpenAI**
+**FocusFlow extension -> your Azure Function -> Azure OpenAI**
 
-Before enabling AI, add `https://*.workers.dev/*` back to `manifest.json` host permissions, deploy the Worker, set `OPENAI_API_KEY` as a Worker secret, allowlist your extension id, and paste the Worker URL into the popup. See `proxy/README.md` for the full guide.
+The backend keeps these defences in one place:
 
-Set a hard monthly spending limit in your OpenAI billing dashboard before enabling AI. Code-level rate limits help, but a billing cap is the final protection against surprise costs.
+- Chrome extension origin allowlist with CORS.
+- Request body and transcript size caps.
+- Strict inbound request schema validation.
+- Per-IP rate limiting with Azure Table Storage via the Function App's existing storage account.
+- Server-side deployment and token limits.
+- Prompt-injection hardening around transcript text.
+- Server-side and extension-side output validation.
+- Privacy-safe logs that never include transcript content.
+- Azure OpenAI secrets loaded only from Function App settings.
+- GPT-5-compatible request settings: `max_completion_tokens`, no temperature/sampling parameters, and JSON response format.
+
+Before enabling AI, add `https://*.azurewebsites.net/*` to `manifest.json` host permissions, deploy the Azure Function, set the Azure OpenAI app settings, allowlist your extension id, and paste `https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate` into the popup. The current Azure OpenAI resource is `aoai-checkpoint-yt-pb5kh8`, endpoint `https://aoai-checkpoint-yt-pb5kh8.openai.azure.com/`, deployment `questions`, model `gpt-5-mini` version `2025-08-07`. See `backend/README.md` for the full guide.
+
+Set a budget alert or spending cap in Azure Cost Management before enabling AI. Code-level rate limits help, but a billing cap is the final protection against surprise costs.
+

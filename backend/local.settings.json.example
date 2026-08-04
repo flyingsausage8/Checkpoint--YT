@@ -1,0 +1,13 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AZURE_OPENAI_ENDPOINT": "https://aoai-checkpoint-yt-pb5kh8.openai.azure.com/",
+    "AZURE_OPENAI_API_KEY": "paste-key-here",
+    "AZURE_OPENAI_DEPLOYMENT": "questions",
+    "ALLOWED_ORIGINS": "chrome-extension://YOUR_EXTENSION_ID"
+  }
+}
+
+Never commit the real local.settings.json file. It contains secrets.

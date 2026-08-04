@@ -2,8 +2,8 @@ window.FocusFlow = window.FocusFlow || {};
 
 window.FocusFlow.ai = (() => {
   const AI_PROXY_ENABLED_IN_THIS_BUILD = false;
-  // Replace this with your deployed Cloudflare Worker URL before sharing the extension.
-  const DEFAULT_PROXY_URL = 'https://focusflow-proxy.YOUR-SUBDOMAIN.workers.dev';
+  // Replace this with your deployed Azure Function URL before sharing the extension.
+  const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
   const TIMEOUT_MS = 20000;
 
   function storageGet(area, keys) {
@@ -12,7 +12,7 @@ window.FocusFlow.ai = (() => {
 
   function endpointFromBase(baseUrl) {
     const url = String(baseUrl || DEFAULT_PROXY_URL).trim().replace(/\/+$/, '');
-    return `${url}/generate`;
+    return url.endsWith('/generate') ? url : `${url}/api/generate`;
   }
 
   async function generateForVideo({ videoId, title, chunks }) {

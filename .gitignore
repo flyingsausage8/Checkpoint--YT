@@ -3,6 +3,8 @@ node_modules/
 *.zip
 .DS_Store
 dist/
-.dev.vars
-.wrangler/
-proxy/node_modules/
+local.settings.json
+bin/
+obj/
+.azure/
+.python_packages/

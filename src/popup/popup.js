@@ -1,5 +1,5 @@
 const { formatTime } = window.FocusFlowFormat;
-const DEFAULT_PROXY_URL = 'https://focusflow-proxy.YOUR-SUBDOMAIN.workers.dev';
+const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
 
 const DEFAULT_SETTINGS = {
   enabled: true,

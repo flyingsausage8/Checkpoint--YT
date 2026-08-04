@@ -1,5 +1,5 @@
 (() => {
-  const DEFAULT_PROXY_URL = 'https://focusflow-proxy.YOUR-SUBDOMAIN.workers.dev';
+  const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
   const AI_PROXY_ENABLED_IN_THIS_BUILD = false;
   const DEFAULT_SETTINGS = {
     enabled: true,
