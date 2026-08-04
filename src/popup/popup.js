@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS = {
   chunkMinutes: 3,
   minVideoMinutes: 4,
   autoPause: true,
-  useAI: false,
+  useAI: true,
   proxyUrl: DEFAULT_PROXY_URL,
 };
 
@@ -254,3 +254,4 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 window.addEventListener('unload', () => clearInterval(progressTimer));
+

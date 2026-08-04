@@ -1,7 +1,7 @@
 window.FocusFlow = window.FocusFlow || {};
 
 window.FocusFlow.ai = (() => {
-  const AI_PROXY_ENABLED_IN_THIS_BUILD = false;
+  const AI_PROXY_ENABLED_IN_THIS_BUILD = true;
   // Replace this with your deployed Azure Function URL before sharing the extension.
   const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
   const TIMEOUT_MS = 20000;

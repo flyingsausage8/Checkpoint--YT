@@ -9,7 +9,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://www.youtube.com/*"
+    "https://www.youtube.com/*",
+    "https://func-checkpoint-yt-pb5kh8.azurewebsites.net/*"
   ],
   "action": {
     "default_popup": "src/popup/popup.html",
@@ -49,5 +50,6 @@
       ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx6487OSpFqp2v5XjXHPoePMG2Lx3IuqhnQ5ipPK2yncPFAX0CzOfYc/Q4tKgr/qb6xubgNGhw/JrusUDzppMobIXqUj3EBxnVOw8eMz+oZkZ8afqRooc3qI4DNCNqnzmoCrWgJNEMGlo8LCgqh+2RlwAWzdlM+7rMIDHUJ0ey6M01PrUC/U9tRXF4Gl6NMfo7oyPeg0UVlfhkfDVrlr6u5wDD5PQdC3cJo7ikFa4N0ud+oSgIUC92XL/gKrPwqxAsLT1MGxOm+DBhLmI3AV3Ow6kFEsos2vKQy98zXTV35l5US5fjjOZIqUHrRHsRV/FpZEiAp4CtO/ssytoU1BuOQIDAQAB"
 }

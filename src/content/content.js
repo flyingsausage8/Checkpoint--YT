@@ -1,12 +1,12 @@
 (() => {
   const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
-  const AI_PROXY_ENABLED_IN_THIS_BUILD = false;
+  const AI_PROXY_ENABLED_IN_THIS_BUILD = true;
   const DEFAULT_SETTINGS = {
     enabled: true,
     chunkMinutes: 3,
     minVideoMinutes: 4,
     autoPause: true,
-    useAI: false,
+    useAI: true,
     proxyUrl: DEFAULT_PROXY_URL,
   };
   const END_BUFFER_SECONDS = 30;
@@ -60,7 +60,7 @@
           : DEFAULT_SETTINGS.minVideoMinutes
       ),
       autoPause: saved.autoPause !== false,
-      useAI: saved.useAI === true,
+      useAI: saved.useAI !== false,
       proxyUrl: typeof saved.proxyUrl === 'string' ? saved.proxyUrl.trim() : DEFAULT_PROXY_URL,
     };
   }
@@ -70,7 +70,7 @@
       AI_PROXY_ENABLED_IN_THIS_BUILD &&
         settings.useAI &&
         settings.proxyUrl &&
-        settings.proxyUrl.trim() !== DEFAULT_PROXY_URL
+        !/YOUR-|example\.com/i.test(settings.proxyUrl)
     );
   }
 
@@ -543,3 +543,4 @@
 
   scheduleInitialise();
 })();
+
