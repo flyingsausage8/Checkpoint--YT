@@ -23,10 +23,11 @@ async function generate(request, context = console) {
   let chunkCount = 0;
   let status = 500;
   const origin = getHeader(request, 'origin') || '';
+  const extensionId = getHeader(request, 'x-extension-id') || '';
   const corsHeaders = corsFor(origin);
 
   try {
-    const originCheck = checkOrigin(origin, process.env.ALLOWED_ORIGINS || '');
+    const originCheck = checkOrigin(origin, process.env.ALLOWED_ORIGINS || '', extensionId);
 
     // Defence 1: CORS + origin allowlist. Origin is spoofable by non-browser
     // clients, so this is a browser filter, not a security wall.
@@ -139,18 +140,28 @@ function corsFor(origin) {
   return {
     'Access-Control-Allow-Origin': origin || 'null',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Extension-Id',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
 }
 
-function checkOrigin(origin, allowedOrigins) {
+// Requests from an extension service worker are not CORS requests, so Chrome
+// may omit the Origin header entirely. In that case fall back to the extension
+// id the worker sends explicitly. Both signals are equally spoofable by a
+// non-browser client, so this is a filter against casual misuse, not a wall;
+// the rate limiter and size caps are what actually bound abuse.
+function checkOrigin(origin, allowedOrigins, extensionId) {
   const allowed = String(allowedOrigins || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
-  return { origin, allowed: allowed.includes(origin) };
+
+  if (origin) return { origin, allowed: allowed.includes(origin) };
+  if (extensionId) {
+    return { origin: '', allowed: allowed.includes(`chrome-extension://${extensionId}`) };
+  }
+  return { origin: '', allowed: false };
 }
 
 function clientIp(request) {
