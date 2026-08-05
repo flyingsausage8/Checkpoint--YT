@@ -19,6 +19,11 @@ import {
   invalidateActiveToken,
   hasClientId,
 } from './auth.js';
+import { initSync, pullActive } from './sync.js';
+
+// Start watching for settings changes so a signed-in user's edits push to the
+// server. Safe when signed out — it never fires a sync without an active account.
+initSync();
 
 const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
 const TIMEOUT_MS = 45000;
@@ -129,6 +134,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === 'focusflow:auth-sign-in') {
     signIn({ interactive: true })
+      // Pull the account's settings from the server before we answer, so the
+      // popup renders server-authoritative settings straight after sign-in.
+      // pullActive never throws and never blocks the UI on failure.
+      .then(async (account) => {
+        await pullActive().catch(() => {});
+        return account;
+      })
       .then((account) => sendResponse({ ok: true, account }))
       .catch((error) =>
         sendResponse({ ok: false, error: error?.code || 'auth_flow_failed', message: String(error?.message || error) })
@@ -146,7 +158,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === 'focusflow:auth-switch') {
     switchAccount(message.sub)
-      .then(() => authState())
+      // Switching accounts is like signing in as that account: pull its
+      // settings so the newly-active person sees their own, not the previous
+      // account's, settings.
+      .then(async () => {
+        await pullActive().catch(() => {});
+        return authState();
+      })
       .then((state) => sendResponse({ ok: true, ...state }))
       .catch((error) =>
         sendResponse({ ok: false, error: error?.code || 'switch_failed', message: String(error?.message || error) })

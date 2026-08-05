@@ -46,6 +46,7 @@ const elements = {
   signOutBtn: document.querySelector('#signOutBtn'),
   removeAccountBtn: document.querySelector('#removeAccountBtn'),
   accountError: document.querySelector('#accountError'),
+  syncStatus: document.querySelector('#syncStatus'),
 };
 
 let saveTimer = null;
@@ -303,6 +304,11 @@ for (const input of [
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes.lastStatus) renderStatus(changes.lastStatus.newValue);
+  // The service worker updates `sync:<sub>` as a push succeeds or fails; keep
+  // the sync line honest when that happens while the popup is open.
+  if (areaName === 'local' && Object.keys(changes).some((key) => /^sync:/.test(key))) {
+    refreshSyncStatus();
+  }
 });
 
 // --- Google client ID (app-level, not per account) ------------------------
@@ -359,6 +365,8 @@ function renderAccount(state) {
   const active = state?.active || null;
   const accounts = state?.accounts || [];
 
+  renderSyncStatus(active);
+
   if (!active) {
     elements.accountSignedIn.hidden = true;
     elements.accountSignedOut.hidden = false;
@@ -403,6 +411,30 @@ function renderAccount(state) {
 async function refreshAccount() {
   const state = await sendAuth({ type: 'focusflow:auth-state' });
   if (state.ok) renderAccount(state);
+}
+
+// --- sync status line ------------------------------------------------------
+// A quiet, honest one-liner about where settings live. Signed out, settings
+// stay on this device only, so we invite the user to sign in. Signed in, we
+// show "Synced" only when the service worker has actually confirmed a sync with
+// the server; anything else (pending, error, expired session) is reported
+// plainly as device-only rather than a false "Synced". The service worker keeps
+// this state in chrome.storage.local under `sync:<sub>`.
+async function renderSyncStatus(active) {
+  if (!active) {
+    elements.syncStatus.textContent = 'Sign in to sync your settings across devices.';
+    return;
+  }
+  const key = `sync:${active.sub}`;
+  const stored = await chrome.storage.local.get({ [key]: null });
+  const status = stored[key]?.status;
+  elements.syncStatus.textContent =
+    status === 'synced' ? 'Synced' : 'Saved on this device only';
+}
+
+async function refreshSyncStatus() {
+  const state = await sendAuth({ type: 'focusflow:auth-state' });
+  renderSyncStatus(state.ok ? state.active : null);
 }
 
 // After any account change, reload settings so the form reflects the new

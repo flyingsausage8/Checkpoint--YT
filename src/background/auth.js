@@ -111,6 +111,16 @@ async function getAuthEndpoint() {
   return `${backendBase(proxyUrl)}/api/auth`;
 }
 
+/**
+ * The settings-sync endpoint, derived from the same proxy URL as everything
+ * else so the owner only ever configures one host. We reuse backendBase() on
+ * purpose — the host must never be hard-coded in two places that could drift.
+ */
+async function getSyncEndpoint() {
+  const { proxyUrl } = await syncGet({ proxyUrl: DEFAULT_PROXY_URL });
+  return `${backendBase(proxyUrl)}/api/sync`;
+}
+
 // ---------------------------------------------------------------------------
 // base64url + JWT (decode only, and only for `exp`; identity comes from backend)
 // ---------------------------------------------------------------------------
@@ -560,4 +570,5 @@ export {
   getIdToken,
   invalidateActiveToken,
   hasClientId,
+  getSyncEndpoint,
 };
