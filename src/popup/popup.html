@@ -95,11 +95,64 @@
       #saveStatus, #testStatus { min-height: 18px; color: #4ade80; font-size: 12px; }
       details { margin-top: 8px; color: #a1a1aa; font-size: 12px; }
       summary { cursor: pointer; }
+
+      .account-head { display: flex; align-items: center; gap: 10px; }
+      .account-avatar {
+        width: 40px; height: 40px; flex: 0 0 40px;
+        border-radius: 999px; background: #3f3f46; object-fit: cover;
+      }
+      .account-name { font-size: 14px; font-weight: 700; word-break: break-word; }
+      .account-email { color: #a1a1aa; font-size: 12px; word-break: break-word; }
+      #accountError { min-height: 0; color: #f87171; font-size: 12px; }
+      #accountError:not(:empty) { min-height: 16px; margin-top: 6px; }
+      select {
+        width: 100%; box-sizing: border-box; margin-top: 8px; padding: 8px;
+        border: 1px solid #3f3f46; border-radius: 8px; background: #27272a; color: #fafafa;
+      }
+      .danger { background: transparent; color: #f87171; border: 1px solid #7f1d1d; }
     </style>
   </head>
   <body>
     <h1>FocusFlow</h1>
     <p>Phase 2 is active: YouTube captions plus offline questions. AI is off.</p>
+
+    <!--
+      Account area. We use "Sign in with Google" — there is deliberately no
+      password field anywhere. Signing in is optional: FocusFlow works fully
+      while signed out.
+    -->
+    <section class="status-card" aria-live="polite">
+      <h2>Account</h2>
+
+      <!-- Signed-out view -->
+      <div id="accountSignedOut">
+        <button id="signInBtn" class="primary" type="button">Sign in with Google</button>
+        <span class="hint">Optional. Sign in to sync your settings across devices and profiles. FocusFlow works without it.</span>
+      </div>
+
+      <!-- Signed-in view -->
+      <div id="accountSignedIn" hidden>
+        <div class="account-head">
+          <img id="accountAvatar" class="account-avatar" alt="" hidden>
+          <div>
+            <div id="accountName" class="account-name"></div>
+            <div id="accountEmail" class="account-email"></div>
+          </div>
+        </div>
+        <div id="sessionExpired" class="hint" hidden>Your session expired — please sign in again.</div>
+
+        <label id="switchRow" class="stack" hidden>
+          Switch account
+          <select id="switchAccount"></select>
+        </label>
+
+        <button id="signOutBtn" class="secondary" type="button" style="margin-top:10px;">Sign out</button>
+        <button id="removeAccountBtn" class="secondary danger" type="button">Remove this account</button>
+        <span class="hint">Sign out keeps your settings on this device. Remove deletes this account's settings from here.</span>
+      </div>
+
+      <div id="accountError" role="status" aria-live="polite"></div>
+    </section>
 
     <button id="testCheckpoint" class="primary" type="button">Test checkpoint now</button>
     <button id="viewTranscript" class="secondary" type="button">View transcript</button>
@@ -151,6 +204,11 @@
         Azure Function URL
         <input id="proxyUrl" type="text" placeholder="https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate">
         <span class="hint">Dormant in this build unless Azure host permissions are re-enabled.</span>
+      </label>
+      <label class="stack">
+        Google client ID
+        <input id="googleClientId" type="text" placeholder="Leave blank to use FocusFlow's own">
+        <span class="hint">Advanced: only needed if you run your own backend. Leave this blank and Sign in with Google just works.</span>
       </label>
     </details>
 

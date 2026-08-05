@@ -113,7 +113,21 @@
   }
 
   async function getSettings() {
-    const saved = await storageGet('sync', DEFAULT_SETTINGS);
+    // Settings are per-account once someone signs in. We look up the active
+    // account (kept in local storage by the auth module) and, if there is one,
+    // read that account's namespaced settings from sync. Signed-out use keeps
+    // reading the original top-level keys, so anonymous viewing is unchanged.
+    const { activeAccount } = await storageGet('local', { activeAccount: null });
+    let saved;
+    if (activeAccount) {
+      const key = `account:${activeAccount}:settings`;
+      const namespaced = await storageGet('sync', { [key]: null });
+      // First sign-in has no saved settings yet, so fall back to the anonymous
+      // ones as a sensible starting point.
+      saved = namespaced[key] || (await storageGet('sync', DEFAULT_SETTINGS));
+    } else {
+      saved = await storageGet('sync', DEFAULT_SETTINGS);
+    }
     return {
       enabled: saved.enabled !== false,
       chunkMinutes: clampNumber(saved.chunkMinutes, 1, 20, DEFAULT_SETTINGS.chunkMinutes),
@@ -1061,8 +1075,21 @@
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== 'sync') return;
-    if (Object.keys(changes).some((key) => key in DEFAULT_SETTINGS)) scheduleInitialise();
+    // Re-plan when anonymous settings change...
+    if (areaName === 'sync' && Object.keys(changes).some((key) => key in DEFAULT_SETTINGS)) {
+      scheduleInitialise();
+      return;
+    }
+    // ...when a signed-in account's namespaced settings change...
+    if (areaName === 'sync' && Object.keys(changes).some((key) => /^account:.+:settings$/.test(key))) {
+      scheduleInitialise();
+      return;
+    }
+    // ...and when the active account itself switches, so the new person's
+    // settings and progress take effect immediately.
+    if (areaName === 'local' && 'activeAccount' in changes) {
+      scheduleInitialise();
+    }
   });
 
   scheduleInitialise();

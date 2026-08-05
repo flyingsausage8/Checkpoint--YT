@@ -44,6 +44,7 @@ window.FocusFlow.ai = (() => {
       invalid_output: 'the model output could not be used',
       no_transcript: 'no transcript was available',
       no_chunks: 'no transcript was available',
+      unauthorized: 'your sign-in has expired — please sign in again',
     };
     return map[code] ? `${map[code]} (${code})` : String(code || 'unknown error');
   }

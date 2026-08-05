@@ -1,4 +1,13 @@
-const crypto = require('crypto');
+const { verifyGoogleIdToken } = require('../auth/googleVerifier');
+const {
+  getHeader,
+  readBody,
+  response,
+  corsFor,
+  checkOrigin,
+  clientIp,
+  checkRateLimit,
+} = require('../http/common');
 
 let azureFunctionsApp = null;
 try {
@@ -13,9 +22,16 @@ const MAX_TRANSCRIPT_CHARS = 50000;
 const MAX_CHUNKS = 24;
 const MAX_SEGMENT_LINES = 1200;
 const MAX_COMPLETION_TOKENS = Number(process.env.AZURE_OPENAI_MAX_COMPLETION_TOKENS || 16000);
-const HOURLY_LIMIT = 60;
-const DAILY_LIMIT = 300;
-const RATE_TABLE = 'FocusFlowRateLimit';
+// Per-account allowance for signed-in users, keyed on the Google `sub` claim.
+// These sit BELOW the per-client (IP) ceiling (DEFAULT_HOURLY/DAILY_LIMIT in
+// http/common.js), which still applies to every request. Rationale: a study
+// session on a long video is roughly one request per section, so ~30/hour and
+// ~150/day comfortably covers real use while stopping a single account from
+// draining the whole per-client budget or running up an open-ended bill (the
+// owner pays out of pocket and has not set a budget alert yet). Tune these once
+// real usage and a budget alert exist.
+const ACCOUNT_HOURLY_LIMIT = 30;
+const ACCOUNT_DAILY_LIMIT = 150;
 const DANGEROUS_OUTPUT = /<script|javascript:|data:text\/html/i;
 
 async function generate(request, context = console) {
@@ -54,8 +70,23 @@ async function generate(request, context = console) {
       return response(status, { error: 'request_too_large' }, corsHeaders);
     }
 
+    // Identity (issue #6): the extension sends `Authorization: Bearer <google_id_token>`
+    // when someone is signed in. Anonymous requests (no header) are still fully
+    // supported — this is an accessibility tool and must not be gated behind a
+    // login. A present-but-broken token, however, is reported as 401 rather than
+    // silently downgraded to anonymous, so a caller with a bad credential is told.
+    const identity = await resolveIdentity(request, context);
+    if (identity.error) {
+      status = 401;
+      return response(status, { error: 'unauthorized', reason: identity.reason }, corsHeaders);
+    }
+
     const ip = clientIp(request);
-    const rate = await checkRateLimit(ip, process.env.AzureWebJobsStorage, context);
+    // Per-client (IP) ceiling applies to every request, signed-in or not, so the
+    // total spend stays bounded no matter how many accounts sign in from one
+    // client. Keyed under an `ip:` namespace to keep it distinct from per-account
+    // buckets in the same table.
+    const rate = await checkRateLimit(`ip:${ip}`, process.env.AzureWebJobsStorage, context);
     if (!rate.allowed) {
       status = 429;
       return response(status, { error: 'rate_limited' }, {
@@ -63,6 +94,34 @@ async function generate(request, context = console) {
         'Retry-After': String(rate.retryAfterSeconds),
       });
     }
+
+    // Signed-in users additionally get their own smaller per-account allowance,
+    // keyed on the immutable `sub` claim (never email — emails can change, sub
+    // cannot). This is on top of, not instead of, the ceiling above.
+    if (identity.authenticated) {
+      const accountRate = await checkRateLimit(
+        `sub:${identity.sub}`,
+        process.env.AzureWebJobsStorage,
+        context,
+        Date.now(),
+        { hourly: ACCOUNT_HOURLY_LIMIT, daily: ACCOUNT_DAILY_LIMIT }
+      );
+      if (!accountRate.allowed) {
+        status = 429;
+        return response(status, { error: 'rate_limited' }, {
+          ...corsHeaders,
+          'Retry-After': String(accountRate.retryAfterSeconds),
+        });
+      }
+    }
+
+    // Identity state for diagnostics. We expose only whether the caller is
+    // authenticated and the first 8 chars of `sub` — never the full sub, the
+    // email, or any part of the raw token, in responses OR logs.
+    const identityDiagnostics = {
+      authenticated: identity.authenticated,
+      subjectPrefix: identity.authenticated ? String(identity.sub).slice(0, 8) : null,
+    };
 
     const rawBody = await readBody(request);
     if (Buffer.byteLength(rawBody, 'utf8') > MAX_BODY_BYTES) {
@@ -104,6 +163,7 @@ async function generate(request, context = console) {
         receivedChars: seg.value.totalChars,
         deployment: config.deployment,
         modelLatencyMs: 0,
+        identity: identityDiagnostics,
       };
 
       // A model failure or unusable output must never surface as a 502. We
@@ -151,6 +211,7 @@ async function generate(request, context = console) {
       receivedChars: inbound.value.chunks.reduce((sum, c) => sum + c.text.length, 0),
       deployment: config.deployment,
       modelLatencyMs: 0,
+      identity: identityDiagnostics,
     };
 
     // As with segment mode, an unusable model response is returned as a 200 with
@@ -185,59 +246,29 @@ async function generate(request, context = console) {
   }
 }
 
-function getHeader(request, name) {
-  if (!request?.headers) return '';
-  if (typeof request.headers.get === 'function') return request.headers.get(name) || '';
-  return request.headers[name.toLowerCase()] || request.headers[name] || '';
-}
+// Resolve caller identity from an optional `Authorization: Bearer` header.
+//  - No header            -> anonymous (authenticated: false), request proceeds.
+//  - Header present, valid -> authenticated with the verified `sub`.
+//  - Header present, bad   -> { error: true, reason } so the caller returns 401,
+//                             never a silent downgrade to anonymous.
+// The client ID comes from the GOOGLE_CLIENT_ID app setting, never from source.
+// If it is unset we fail closed: the verifier returns `identity_not_configured`
+// and we reject the token (anonymous requests are unaffected).
+async function resolveIdentity(request, context = console) {
+  const authHeader = getHeader(request, 'authorization').trim();
+  if (!authHeader) return { authenticated: false, sub: null };
 
-async function readBody(request) {
-  if (typeof request.text === 'function') return request.text();
-  if (typeof request.body === 'string') return request.body;
-  if (request.body && typeof request.body === 'object') return JSON.stringify(request.body);
-  return '';
-}
+  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+  if (!match) return { error: true, reason: 'malformed' };
 
-function response(status, body, headers = {}) {
-  return {
-    status,
-    headers: body ? { 'Content-Type': 'application/json', ...headers } : headers,
-    body: body ? JSON.stringify(body) : undefined,
-  };
-}
-
-function corsFor(origin) {
-  return {
-    'Access-Control-Allow-Origin': origin || 'null',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Extension-Id',
-    'Access-Control-Max-Age': '86400',
-    Vary: 'Origin',
-  };
-}
-
-// Requests from an extension service worker are not CORS requests, so Chrome
-// may omit the Origin header entirely. In that case fall back to the extension
-// id the worker sends explicitly. Both signals are equally spoofable by a
-// non-browser client, so this is a filter against casual misuse, not a wall;
-// the rate limiter and size caps are what actually bound abuse.
-function checkOrigin(origin, allowedOrigins, extensionId) {
-  const allowed = String(allowedOrigins || '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-
-  if (origin) return { origin, allowed: allowed.includes(origin) };
-  if (extensionId) {
-    return { origin: '', allowed: allowed.includes(`chrome-extension://${extensionId}`) };
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    context.warn?.('GOOGLE_CLIENT_ID is not configured; rejecting presented identity token (failing closed).');
   }
-  return { origin: '', allowed: false };
-}
 
-function clientIp(request) {
-  const forwarded = getHeader(request, 'x-forwarded-for').split(',')[0].trim();
-  const withoutPort = forwarded.replace(/^\[([^\]]+)\](?::\d+)?$/, '$1').replace(/:\d+$/, '');
-  return withoutPort || 'unknown';
+  const result = await verifyGoogleIdToken(match[1], { clientId });
+  if (!result.ok) return { error: true, reason: result.reason };
+  return { authenticated: true, sub: result.claims.sub };
 }
 
 function validateInboundPayload(raw) {
@@ -276,52 +307,6 @@ function validateInboundPayload(raw) {
   }
 
   return { ok: true, value: { videoId: raw.videoId, title, chunks, chunkCount: chunks.length } };
-}
-
-// Defence 4: Table Storage rate limiting using AzureWebJobsStorage. It fails
-// open with a warning if storage is unavailable, keeping local dev simple.
-async function checkRateLimit(ip, connectionString = process.env.AzureWebJobsStorage, context = console, now = Date.now()) {
-  if (!connectionString) return { allowed: true, retryAfterSeconds: 0 };
-
-  try {
-    const { TableClient } = require('@azure/data-tables');
-    const tableClient = TableClient.fromConnectionString(connectionString, RATE_TABLE);
-    await tableClient.createTable().catch((error) => {
-      if (error.statusCode !== 409) throw error;
-    });
-
-    const partitionKey = crypto.createHash('sha256').update(ip || 'unknown').digest('hex').slice(0, 32);
-    const rowKey = 'window';
-    let timestamps = [];
-    try {
-      const entity = await tableClient.getEntity(partitionKey, rowKey);
-      timestamps = JSON.parse(entity.timestamps || '[]');
-    } catch (error) {
-      if (error.statusCode !== 404) throw error;
-    }
-
-    const dayAgo = now - 24 * 60 * 60 * 1000;
-    const hourAgo = now - 60 * 60 * 1000;
-    timestamps = timestamps.filter((ts) => Number.isFinite(ts) && ts > dayAgo);
-    const hourly = timestamps.filter((ts) => ts > hourAgo);
-
-    if (hourly.length >= HOURLY_LIMIT || timestamps.length >= DAILY_LIMIT) {
-      const hourlyLimited = hourly.length >= HOURLY_LIMIT;
-      const oldest = Math.min(...(hourlyLimited ? hourly : timestamps));
-      const windowMs = hourlyLimited ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-      return {
-        allowed: false,
-        retryAfterSeconds: Math.max(1, Math.ceil((oldest + windowMs - now) / 1000)),
-      };
-    }
-
-    timestamps.push(now);
-    await tableClient.upsertEntity({ partitionKey, rowKey, timestamps: JSON.stringify(timestamps) }, 'Replace');
-    return { allowed: true, retryAfterSeconds: 0 };
-  } catch (error) {
-    context.warn?.('Rate limit unavailable; failing open:', error?.message || error);
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
 }
 
 async function callAzureOpenAI(input, config, context = console, messageBuilder = buildMessages) {

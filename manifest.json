@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "activeTab",
-    "tabs"
+    "tabs",
+    "identity"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
@@ -53,6 +54,7 @@
   ],
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx6487OSpFqp2v5XjXHPoePMG2Lx3IuqhnQ5ipPK2yncPFAX0CzOfYc/Q4tKgr/qb6xubgNGhw/JrusUDzppMobIXqUj3EBxnVOw8eMz+oZkZ8afqRooc3qI4DNCNqnzmoCrWgJNEMGlo8LCgqh+2RlwAWzdlM+7rMIDHUJ0ey6M01PrUC/U9tRXF4Gl6NMfo7oyPeg0UVlfhkfDVrlr6u5wDD5PQdC3cJo7ikFa4N0ud+oSgIUC92XL/gKrPwqxAsLT1MGxOm+DBhLmI3AV3Ow6kFEsos2vKQy98zXTV35l5US5fjjOZIqUHrRHsRV/FpZEiAp4CtO/ssytoU1BuOQIDAQAB",
   "background": {
-    "service_worker": "src/background/background.js"
+    "service_worker": "src/background/background.js",
+    "type": "module"
   }
 }

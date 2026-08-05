@@ -8,6 +8,18 @@
  * and bypass CORS because the host is declared in `host_permissions` — which is
  * also what lets the backend's origin allowlist mean something.
  */
+import {
+  signIn,
+  signOut,
+  removeAccount,
+  switchAccount,
+  getActiveAccount,
+  listAccounts,
+  getIdToken,
+  invalidateActiveToken,
+  hasClientId,
+} from './auth.js';
+
 const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
 const TIMEOUT_MS = 45000;
 
@@ -23,15 +35,34 @@ async function postToBackend(payload) {
   try {
     const { proxyUrl } = await chrome.storage.sync.get({ proxyUrl: DEFAULT_PROXY_URL });
     const endpoint = endpointFromBase(proxyUrl);
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Extension-Id': chrome.runtime.id,
+    };
+
+    // When someone is signed in, attach their Google ID token so the backend can
+    // verify who they are and rate-limit per account. We ask silently only: a
+    // background request must never pop a sign-in window. When signed out,
+    // `idToken` is null and we send exactly what we always have (anonymous).
+    const idToken = await getIdToken().catch(() => null);
+    if (idToken) {
+      headers.Authorization = `Bearer ${idToken}`;
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Extension-Id': chrome.runtime.id,
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+
+    if (response.status === 401) {
+      // The backend rejected our token. Treat it as dead: clear it so we stop
+      // sending it, and tell the caller to prompt a fresh sign-in. Never retry.
+      await invalidateActiveToken();
+      return { ok: false, error: 'unauthorized', endpoint };
+    }
 
     if (!response.ok) {
       return { ok: false, error: `http_${response.status}`, endpoint };
@@ -85,5 +116,61 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // --- account / auth messages, all driven from the popup ------------------
+  // The popup asks the service worker to run these because the interactive
+  // sign-in window can outlive the popup (which closes when it loses focus).
+
+  if (message?.type === 'focusflow:auth-state') {
+    authState()
+      .then((state) => sendResponse({ ok: true, ...state }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (message?.type === 'focusflow:auth-sign-in') {
+    signIn({ interactive: true })
+      .then((account) => sendResponse({ ok: true, account }))
+      .catch((error) =>
+        sendResponse({ ok: false, error: error?.code || 'auth_flow_failed', message: String(error?.message || error) })
+      );
+    return true;
+  }
+
+  if (message?.type === 'focusflow:auth-sign-out') {
+    signOut()
+      .then(() => authState())
+      .then((state) => sendResponse({ ok: true, ...state }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (message?.type === 'focusflow:auth-switch') {
+    switchAccount(message.sub)
+      .then(() => authState())
+      .then((state) => sendResponse({ ok: true, ...state }))
+      .catch((error) =>
+        sendResponse({ ok: false, error: error?.code || 'switch_failed', message: String(error?.message || error) })
+      );
+    return true;
+  }
+
+  if (message?.type === 'focusflow:auth-remove') {
+    removeAccount(message.sub)
+      .then(() => authState())
+      .then((state) => sendResponse({ ok: true, ...state }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
   return false;
 });
+
+// Bundle everything the popup needs to draw the account area in one round-trip.
+async function authState() {
+  const [active, accounts, clientIdSet] = await Promise.all([
+    getActiveAccount(),
+    listAccounts(),
+    hasClientId(),
+  ]);
+  return { active, accounts, clientIdSet };
+}
