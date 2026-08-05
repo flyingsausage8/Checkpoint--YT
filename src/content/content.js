@@ -168,10 +168,9 @@
 
   // Ask the page world (mainWorld.js) for the authoritative video length through
   // the existing tracks bridge. lengthSeconds comes from ytInitialPlayerResponse
-  // and is unaffected by ads, so it is our cross-check against the <video>
-  // element. Resolves to a positive number or null if the page world does not
-  // supply it (e.g. an older mainWorld build without lengthSeconds).
-  function requestPageLength(videoId, timeoutMs = 4000) {
+  // and is never skewed by ads. Resolves to a positive number, or null when the
+  // page world replies without a usable length (older build, cold load).
+  function requestPageLength(videoId, timeoutMs = 1500) {
     return new Promise((resolve) => {
       let settled = false;
       let timer = null;
@@ -201,34 +200,58 @@
     });
   }
 
-  // Returns a trustworthy duration in seconds ({ seconds, source, elementDuration })
-  // or null if none can be obtained within the timeout. Waits out ad playback and
-  // unloaded metadata, and prefers the page-world lengthSeconds when the <video>
-  // element disagrees with it by a wide margin (which is what happens while an
-  // ad's duration is being reported by the shared element).
+  // Retries the page-world length request for a few seconds, because on a cold
+  // load ytInitialPlayerResponse may not be populated for the first few hundred
+  // milliseconds. Returns a positive number or null.
+  async function fetchPageLength(videoId, token, budgetMs = 4000) {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline && !token.cancelled) {
+      const length = await requestPageLength(videoId);
+      if (Number.isFinite(length) && length > 0) return length;
+      await sleep(250);
+    }
+    return null;
+  }
+
+  // Returns a trustworthy duration ({ seconds, source, elementDuration }) or null.
+  //
+  // lengthSeconds is authoritative and ads cannot skew it, so it is the primary
+  // source and short-circuits the whole thing — there is no reason to wait for the
+  // <video> element, whose `duration` reports video+ad length and does NOT settle
+  // back to the true length after a pre-roll ad ends (observed 707.721 for a 649s
+  // video). The element is only a fallback for when the page world has no length.
   async function resolveDuration(video, videoId, token) {
-    const pageLength = await requestPageLength(videoId);
+    const pageLength = await fetchPageLength(videoId, token);
+    if (token.cancelled) return null;
+
+    if (Number.isFinite(pageLength) && pageLength > 0) {
+      const elementDuration = Number(video.duration);
+      const elementUsable = Number.isFinite(elementDuration) && elementDuration > 0;
+      const disagrees = elementUsable && Math.abs(pageLength - elementDuration) > 2;
+      return {
+        seconds: pageLength,
+        source: disagrees ? 'lengthSeconds-after-disagreement' : 'lengthSeconds',
+        elementDuration: elementUsable ? elementDuration : null,
+      };
+    }
+
+    // Fallback: no page-world length. Poll the element, waiting out ad playback
+    // and unloaded metadata, within the 30s budget.
     const deadline = Date.now() + 30000;
     let lastSeen = null;
-
     while (Date.now() < deadline && !token.cancelled) {
       const adShowing = isAdShowing();
       const elementDuration = Number(video.duration);
       const elementUsable = Number.isFinite(elementDuration) && elementDuration > 0;
       if (elementUsable) lastSeen = elementDuration;
-
       if (!adShowing && elementUsable) {
-        if (pageLength && Math.abs(pageLength - elementDuration) > Math.max(30, pageLength * 0.25)) {
-          return { seconds: pageLength, source: 'lengthSeconds', elementDuration };
-        }
-        return { seconds: elementDuration, source: 'video', elementDuration };
+        return { seconds: elementDuration, source: 'video-element', elementDuration };
       }
-
       await sleep(250);
     }
-
-    if (pageLength) return { seconds: pageLength, source: 'lengthSeconds-timeout', elementDuration: lastSeen };
-    if (Number.isFinite(lastSeen) && lastSeen > 0) return { seconds: lastSeen, source: 'video-timeout', elementDuration: lastSeen };
+    if (Number.isFinite(lastSeen) && lastSeen > 0) {
+      return { seconds: lastSeen, source: 'video-element-timeout', elementDuration: lastSeen };
+    }
     return null;
   }
 
@@ -694,16 +717,20 @@
       const durationInfo = await resolveDuration(video, videoId, token);
       if (token.cancelled) return;
       const durationSeconds = durationInfo ? durationInfo.seconds : null;
-      if (durationInfo && durationInfo.source !== 'video') {
-        log(
-          'Using video length',
-          durationSeconds,
-          'from',
-          durationInfo.source,
-          '(<video> reported',
-          durationInfo.elementDuration,
-          ')'
-        );
+      if (durationInfo) {
+        if (durationInfo.source === 'lengthSeconds-after-disagreement') {
+          log(
+            'Using authoritative video length',
+            Math.round(durationSeconds),
+            's; <video> element reported',
+            durationInfo.elementDuration,
+            's (pre-roll ad likely inflating it)'
+          );
+        } else if (durationInfo.source === 'video-element-timeout') {
+          log('No page-world lengthSeconds; fell back to <video> element length', Math.round(durationSeconds), 's');
+        } else {
+          console.debug?.('[FocusFlow] video length', Math.round(durationSeconds), 'via', durationInfo.source);
+        }
       }
 
       const cues = transcript.cues || [];
