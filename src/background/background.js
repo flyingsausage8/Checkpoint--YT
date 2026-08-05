@@ -51,6 +51,7 @@ async function requestQuestions({ videoId, title, chunks }) {
   return {
     ok: true,
     questions: result.body.questions,
+    reason: result.body.reason,
     diagnostics: result.body.diagnostics,
     endpoint: result.endpoint,
   };
@@ -63,6 +64,7 @@ async function requestSegments(payload) {
   return {
     ok: true,
     sections: result.body.sections,
+    reason: result.body.reason,
     diagnostics: result.body.diagnostics,
     endpoint: result.endpoint,
   };

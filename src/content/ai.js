@@ -18,6 +18,36 @@ window.FocusFlow.ai = (() => {
   const MAX_WINDOW_SECONDS = 600;
   const MAX_CONCURRENT_WINDOWS = 4;
 
+  // A trailing window shorter than a section minimum can never yield a valid
+  // section, so the backend would reject it. We fold such a runt window into the
+  // previous one as long as the merge stays within reasonable slack of the cap.
+  const RUNT_MIN_CHARS = 2000;
+  const RUNT_MERGE_SLACK = 1.5;
+
+  // Turns an internal reason/error code into a short, human-readable sentence so
+  // console warnings tell the owner what actually happened instead of `http_502`.
+  function describeError(code) {
+    const map = {
+      http_429: 'too many requests, try again later',
+      model_rate_limited: 'too many requests, try again later',
+      rate_limited: 'too many requests, try again later',
+      http_502: 'the server hit an unexpected error',
+      http_500: 'the server hit an unexpected error',
+      server_error: 'the server hit an unexpected error',
+      model_error: 'the server hit an unexpected error',
+      timeout: 'the request timed out',
+      model_timeout: 'the request timed out',
+      network: 'a network error occurred',
+      no_response: 'the extension worker did not respond',
+      no_valid_sections: 'the model could not segment this part of the video',
+      no_valid_questions: 'the model returned no usable questions',
+      invalid_output: 'the model output could not be used',
+      no_transcript: 'no transcript was available',
+      no_chunks: 'no transcript was available',
+    };
+    return map[code] ? `${map[code]} (${code})` : String(code || 'unknown error');
+  }
+
   // The network call is delegated to the background service worker. Fetching
   // from here would carry YouTube's origin and be blocked by CORS.
   function askBackground(payload) {
@@ -128,7 +158,7 @@ window.FocusFlow.ai = (() => {
       if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
-        console.warn('[FocusFlow] AI batch failed:', lastError);
+        console.warn('[FocusFlow] AI batch failed:', describeError(lastError));
         continue;
       }
 
@@ -142,7 +172,8 @@ window.FocusFlow.ai = (() => {
 
       const validated = window.FocusFlow.validate.questions(result.questions, batch.length);
       if (!validated) {
-        lastError = 'invalid_output';
+        lastError = result.reason || 'invalid_output';
+        console.warn('[FocusFlow] AI batch unusable:', describeError(lastError));
         continue;
       }
 
@@ -181,7 +212,7 @@ window.FocusFlow.ai = (() => {
   // the per-request line, character, and duration caps. Windows tile the whole
   // video: the first starts at 0, each following one starts where the previous
   // ended, and the last runs to durationSeconds so nothing is left uncovered.
-  function buildWindows(lines, durationSeconds) {
+  function buildWindows(lines, durationSeconds, minSectionSeconds) {
     const groups = [];
     let current = [];
     let chars = 0;
@@ -201,6 +232,22 @@ window.FocusFlow.ai = (() => {
       chars += size;
     }
     if (current.length) groups.push(current);
+
+    // Bug fix: a short trailing window (e.g. the last ~80s of a video) is shorter
+    // than minSectionSeconds and would be rejected by the backend, so merge it
+    // back into the previous window unless that would blow past the char cap.
+    if (groups.length >= 2) {
+      const last = groups[groups.length - 1];
+      const prev = groups[groups.length - 2];
+      const lastChars = last.reduce((sum, line) => sum + line.text.length, 0);
+      const prevChars = prev.reduce((sum, line) => sum + line.text.length, 0);
+      const lastSpan = durationSeconds - last[0].t;
+      const tooSmall = lastChars < RUNT_MIN_CHARS || lastSpan < (minSectionSeconds || 0);
+      if (tooSmall && prevChars + lastChars <= MAX_CHARS_PER_WINDOW * RUNT_MERGE_SLACK) {
+        groups[groups.length - 2] = prev.concat(last);
+        groups.pop();
+      }
+    }
 
     return groups.map((group, i) => ({
       lines: group,
@@ -235,7 +282,7 @@ window.FocusFlow.ai = (() => {
     const minSectionSeconds = Math.max(45, Math.round(target * 0.5));
     const maxSectionSeconds = Math.max(minSectionSeconds + 60, Math.round(target * 1.5));
 
-    const windows = buildWindows(lines, total).filter((win) => win.windowEnd > win.windowStart);
+    const windows = buildWindows(lines, total, minSectionSeconds).filter((win) => win.windowEnd > win.windowStart);
     const totalWindows = windows.length;
 
     const results = await mapLimit(windows, MAX_CONCURRENT_WINDOWS, async (win, i) => {
@@ -274,7 +321,7 @@ window.FocusFlow.ai = (() => {
       if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
-        console.warn('[FocusFlow] segment window failed:', lastError);
+        console.warn('[FocusFlow] segment window failed:', describeError(lastError));
         failedWindows.push({ windowStart: win.windowStart, windowEnd: win.windowEnd });
         continue;
       }
@@ -289,7 +336,8 @@ window.FocusFlow.ai = (() => {
 
       const validated = window.FocusFlow.validate.sections(result.sections);
       if (!validated) {
-        lastError = 'invalid_output';
+        lastError = result.reason || 'invalid_output';
+        console.warn('[FocusFlow] segment window unusable:', describeError(lastError));
         failedWindows.push({ windowStart: win.windowStart, windowEnd: win.windowEnd });
         continue;
       }
@@ -325,5 +373,5 @@ window.FocusFlow.ai = (() => {
     };
   }
 
-  return { generateForVideo, segmentVideo, DEFAULT_PROXY_URL };
+  return { generateForVideo, segmentVideo, describeError, DEFAULT_PROXY_URL };
 })();

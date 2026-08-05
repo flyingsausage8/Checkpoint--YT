@@ -96,30 +96,35 @@ async function generate(request, context = console) {
       }
 
       const modelStartedAt = Date.now();
-      const modelOutput = await callAzureOpenAI(seg.value, config, context, buildSegmentMessages);
-      const sections = validateSections(modelOutput.sections, seg.value);
-      if (!sections) {
-        status = 502;
-        return response(status, { error: 'invalid_model_output' }, corsHeaders);
+      // Issue #5: lets the extension log that the model actually received the
+      // transcript, without ever echoing transcript content back.
+      const diagnostics = {
+        mode: 'segment',
+        receivedLines: seg.value.lines.length,
+        receivedChars: seg.value.totalChars,
+        deployment: config.deployment,
+        modelLatencyMs: 0,
+      };
+
+      // A model failure or unusable output must never surface as a 502. We
+      // return 200 with an empty sections array plus a reason so the client can
+      // log a human-readable message and cover that range with timed
+      // checkpoints instead of seeing an opaque gateway error.
+      let sections = null;
+      let reason = 'ok';
+      try {
+        const modelOutput = await callAzureOpenAI(seg.value, config, context, buildSegmentMessages);
+        diagnostics.modelLatencyMs = Date.now() - modelStartedAt;
+        sections = validateSections(modelOutput.sections, seg.value);
+        if (!sections) reason = 'no_valid_sections';
+      } catch (error) {
+        diagnostics.modelLatencyMs = Date.now() - modelStartedAt;
+        context.warn?.('Segment model call failed:', error?.message || error);
+        reason = describeModelError(error);
       }
 
       status = 200;
-      return response(
-        status,
-        {
-          sections,
-          // Issue #5: lets the extension log that the model actually received
-          // the transcript, without ever echoing transcript content back.
-          diagnostics: {
-            mode: 'segment',
-            receivedLines: seg.value.lines.length,
-            receivedChars: seg.value.totalChars,
-            deployment: config.deployment,
-            modelLatencyMs: Date.now() - modelStartedAt,
-          },
-        },
-        corsHeaders
-      );
+      return response(status, { sections: sections || [], reason, diagnostics }, corsHeaders);
     }
 
     // Defence 3: inbound schema validation strips all fields except videoId,
@@ -140,32 +145,36 @@ async function generate(request, context = console) {
     }
 
     const modelStartedAt = Date.now();
-    const modelOutput = await callAzureOpenAI(inbound.value, config, context);
-    const questions = validateQuestions(
-      modelOutput.questions,
-      inbound.value.chunks.length,
-      inbound.value.chunks.map((chunk) => chunk.index)
-    );
-    if (!questions) {
-      status = 502;
-      return response(status, { error: 'invalid_model_output' }, corsHeaders);
+    const diagnostics = {
+      mode: 'questions',
+      receivedChunks: inbound.value.chunks.length,
+      receivedChars: inbound.value.chunks.reduce((sum, c) => sum + c.text.length, 0),
+      deployment: config.deployment,
+      modelLatencyMs: 0,
+    };
+
+    // As with segment mode, an unusable model response is returned as a 200 with
+    // an empty questions array and a reason, never a 502, so the client can fall
+    // back to offline questions with a clear log line.
+    let questions = null;
+    let reason = 'ok';
+    try {
+      const modelOutput = await callAzureOpenAI(inbound.value, config, context);
+      diagnostics.modelLatencyMs = Date.now() - modelStartedAt;
+      questions = validateQuestions(
+        modelOutput.questions,
+        inbound.value.chunks.length,
+        inbound.value.chunks.map((chunk) => chunk.index)
+      );
+      if (!questions) reason = 'no_valid_questions';
+    } catch (error) {
+      diagnostics.modelLatencyMs = Date.now() - modelStartedAt;
+      context.warn?.('Questions model call failed:', error?.message || error);
+      reason = describeModelError(error);
     }
 
     status = 200;
-    return response(
-      status,
-      {
-        questions,
-        diagnostics: {
-          mode: 'questions',
-          receivedChunks: inbound.value.chunks.length,
-          receivedChars: inbound.value.chunks.reduce((sum, c) => sum + c.text.length, 0),
-          deployment: config.deployment,
-          modelLatencyMs: Date.now() - modelStartedAt,
-        },
-      },
-      corsHeaders
-    );
+    return response(status, { questions: questions || [], reason, diagnostics }, corsHeaders);
   } catch (error) {
     context.error?.('FocusFlow backend error:', error?.message || error);
     status = 500;
@@ -392,6 +401,17 @@ function readModelConfig() {
   return { endpoint, apiKey, deployment };
 }
 
+// Maps an upstream model failure to a short, stable reason code the client can
+// turn into plain English. Never leak the raw error text to the response.
+function describeModelError(error) {
+  const message = String(error?.message || error || '');
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError' || /timeout|aborted/i.test(message)) {
+    return 'model_timeout';
+  }
+  if (/HTTP 429/.test(message)) return 'model_rate_limited';
+  return 'model_error';
+}
+
 // Issue #1: segment mode receives a time-stamped slice of the transcript and
 // asks the model where the natural topic breaks are.
 function validateSegmentPayload(raw) {
@@ -584,5 +604,6 @@ module.exports = {
   sanitizeTranscriptText,
   buildMessages,
   buildSegmentMessages,
+  describeModelError,
 };
 

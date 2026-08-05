@@ -40,6 +40,13 @@
   const traceWarn = (step, message) =>
     console.warn('[FocusFlow] STEP ' + step + '/5 FAILED - ' + message);
 
+  // Turn an internal reason code into plain English, reusing the shared map in
+  // ai.js so failures read the same everywhere.
+  function describeReason(code) {
+    if (window.FocusFlow?.ai?.describeError) return window.FocusFlow.ai.describeError(code);
+    return String(code || 'unknown error');
+  }
+
   // Bug 1: STEP 2 must be logged when the request is dispatched, not when it
   // resolves ~25s later. This fires synchronously from ai.js, once per window.
   function traceRequestSent(endpoint, info) {
@@ -657,7 +664,7 @@
           if (segResult.failedWindows && segResult.failedWindows.length) {
             traceWarn(
               2,
-              `${segResult.failedWindows.length} of ${segResult.totalWindows} windows failed; covering those ranges with timed offline checkpoints`
+              `${segResult.failedWindows.length} of ${segResult.totalWindows} windows failed (${describeReason(segResult.reason)}); covering those ranges with timed offline checkpoints`
             );
           }
 
@@ -677,7 +684,7 @@
             traceWarn(2, 'AI sections all fell inside the end buffer; using timed checkpoints');
           }
         } else {
-          traceWarn(2, 'AI segmentation failed: ' + segResult.reason);
+          traceWarn(2, 'AI segmentation failed: ' + describeReason(segResult.reason));
           if (segResult.trace) traceResponseSteps(segResult.trace, 0, roundTripMs);
         }
       }
@@ -709,7 +716,7 @@
         if (aiResult.trace) {
           traceResponseSteps(aiResult.trace, (aiQuestions || []).filter(Boolean).length, roundTripMs);
         }
-        if (!aiQuestions) traceWarn(2, 'AI questions unavailable: ' + aiResult.reason);
+        if (!aiQuestions) traceWarn(2, 'AI questions unavailable: ' + describeReason(aiResult.reason));
       }
 
       state.checkpoints = checkpoints;
