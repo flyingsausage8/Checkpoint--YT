@@ -39,6 +39,7 @@
         "https://www.youtube.com/*"
       ],
       "js": [
+        "src/shared/format.js",
         "src/content/captions.js",
         "src/content/questionBank.js",
         "src/content/questions.js",
@@ -46,10 +47,12 @@
         "src/content/ai.js",
         "src/content/overlay.js",
         "src/content/markers.js",
+        "src/content/panel.js",
         "src/content/content.js"
       ],
       "css": [
-        "src/content/overlay.css"
+        "src/content/overlay.css",
+        "src/content/panel.css"
       ],
       "run_at": "document_idle"
     }

@@ -716,6 +716,9 @@
 
   async function initialise() {
     teardown();
+    // The panel outlives individual videos: it re-mounts itself rather than
+    // being rebuilt, and removes itself when you leave a watch page.
+    window.FocusFlow.panel.init();
 
     const videoId = currentVideoId();
     if (!videoId) {
@@ -1159,6 +1162,16 @@
   setInterval(checkForNavigation, 1000);
   const observer = new MutationObserver(checkForNavigation);
   observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Read-only handles for the in-page panel, which lives in this same content
+  // script world and so cannot message itself the way the popup does.
+  window.FocusFlow.session = {
+    progress: progressSnapshot,
+    hasCheckpoints: () => Boolean(state?.triggerNow && state.checkpoints?.length),
+    triggerNow: () => (state?.triggerNow ? state.triggerNow() : Promise.resolve(false)),
+  };
+
+  window.FocusFlow.panel.init();
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     // Re-plan when anonymous settings change...

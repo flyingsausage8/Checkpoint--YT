@@ -1,0 +1,213 @@
+/**
+ * The in-page FocusFlow panel. YouTube's own theme variables did not resolve
+ * reliably from the document element, so light and dark are handled here with
+ * an explicit `html[dark]` rule rather than by inheriting theirs.
+ */
+
+.ffp-panel {
+  margin: 0 0 16px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  background: #fff;
+  color: #0f0f0f;
+  font-family: "Roboto", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+html[dark] .ffp-panel {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: #212121;
+  color: #f1f1f1;
+}
+
+.ffp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+html[dark] .ffp-head { border-bottom-color: rgba(255, 255, 255, 0.12); }
+
+.ffp-collapsed .ffp-head { border-bottom: 0; }
+
+.ffp-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* Cyan is FocusFlow's accent everywhere else (the next checkpoint dot on the
+   progress bar), so the title keeps a matching cue. */
+.ffp-title::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border: 2px solid #06b6d4;
+  border-radius: 50%;
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+
+html[dark] .ffp-title::before { border-color: #22d3ee; }
+
+.ffp-power,
+.ffp-collapse {
+  padding: 4px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+html[dark] .ffp-power,
+html[dark] .ffp-collapse { border-color: rgba(255, 255, 255, 0.2); }
+
+.ffp-power[aria-pressed="true"] {
+  border-color: transparent;
+  background: #06b6d4;
+  color: #04212a;
+}
+
+.ffp-power:hover,
+.ffp-collapse:hover { background: rgba(0, 0, 0, 0.06); }
+
+html[dark] .ffp-power:hover,
+html[dark] .ffp-collapse:hover { background: rgba(255, 255, 255, 0.1); }
+
+.ffp-power[aria-pressed="true"]:hover { background: #22d3ee; }
+
+.ffp-body { padding: 12px; }
+
+.ffp-summary { margin-bottom: 10px; }
+
+.ffp-summary-line { font-weight: 500; }
+
+.ffp-summary-line.ffp-warn { color: #b45309; }
+
+html[dark] .ffp-summary-line.ffp-warn { color: #fbbf24; }
+
+.ffp-track {
+  height: 4px;
+  margin: 8px 0 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+html[dark] .ffp-track { background: rgba(255, 255, 255, 0.16); }
+
+.ffp-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: #06b6d4;
+  transition: width 0.4s linear;
+}
+
+.ffp-progress-line {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.ffp-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+html[dark] .ffp-btn { border-color: rgba(255, 255, 255, 0.2); }
+
+.ffp-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
+
+html[dark] .ffp-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+
+.ffp-btn:disabled { opacity: 0.45; cursor: default; }
+
+.ffp-settings {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+html[dark] .ffp-settings { border-top-color: rgba(255, 255, 255, 0.12); }
+
+.ffp-row { display: flex; flex-direction: column; gap: 5px; }
+
+.ffp-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.ffp-value { font-variant-numeric: tabular-nums; opacity: 0.9; }
+
+.ffp-hint { font-size: 11px; opacity: 0.6; }
+
+.ffp-row input[type="range"] { width: 100%; accent-color: #06b6d4; }
+
+.ffp-row input[type="number"] {
+  width: 72px;
+  padding: 5px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+html[dark] .ffp-row input[type="number"] { border-color: rgba(255, 255, 255, 0.24); }
+
+.ffp-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ffp-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #06b6d4;
+  cursor: pointer;
+}
+
+.ffp-row-check { gap: 3px; }
+
+.ffp-row-check .ffp-hint { margin-left: 25px; }
+
+.ffp-save {
+  min-height: 15px;
+  margin-top: 10px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.ffp-off .ffp-body { opacity: 0.55; }
