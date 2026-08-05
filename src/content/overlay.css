@@ -140,6 +140,67 @@
   cursor: pointer;
 }
 
+/* --- Checkpoint dots on the YouTube progress bar --------------------------
+   The bar behind these can be red, pink, yellow (ads), blue (audio-description
+   bumpers), light grey (buffered) or dark grey (unwatched), so every dot keeps
+   a dark 1px halo to stay legible on all of them, and meaning is carried by
+   whether the dot is hollow or solid rather than by its colour. */
+
+.ff-marker-layer {
+  position: absolute;
+  inset: 0;
+  /* Above the chapter segments (32) and heatmap/timed markers (40), below the
+     scrubber handle (43) so the viewer's own position always wins. */
+  z-index: 41;
+  pointer-events: none;
+}
+
+.ff-marker-layer[data-ff-hidden="1"] {
+  display: none;
+}
+
+.ff-marker {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: 0;
+  box-sizing: border-box;
+  border: 2px solid #fafafa;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  transform: translate(-50%, -50%);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ff-marker-done {
+  background: #fafafa;
+}
+
+.ff-marker-next {
+  border-color: #22d3ee;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 6px 1px rgba(34, 211, 238, 0.85);
+}
+
+.ff-marker-next.ff-marker-done {
+  background: #22d3ee;
+}
+
+.ff-marker-pop {
+  animation: ff-marker-pop 0.45s ease-out;
+}
+
+@keyframes ff-marker-pop {
+  0% { transform: translate(-50%, -50%) scale(1); }
+  45% { transform: translate(-50%, -50%) scale(2.1); }
+  100% { transform: translate(-50%, -50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ff-marker-pop { animation: none; }
+}
+
 .ff-toast {
   position: absolute;
   left: 50%;

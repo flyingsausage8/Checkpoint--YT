@@ -599,6 +599,7 @@
     }
     if (state.pausedByFocusFlow && state.video?.paused) safePlay(state.video);
     window.FocusFlow.overlay?.destroy();
+    window.FocusFlow.markers?.destroy();
     state = null;
   }
 
@@ -632,11 +633,18 @@
 
         if (result === 'rewatch') {
           answered.delete(index);
+          window.FocusFlow.markers?.markPending(index);
           video.currentTime = previousCheckpoint;
           lastTime = previousCheckpoint;
         } else if (manual) {
           answered.delete(index);
+          window.FocusFlow.markers?.markPending(index);
+        } else {
+          // Answered, skipped or passed through — either way this checkpoint is
+          // behind the viewer now, so fill the dot in.
+          window.FocusFlow.markers?.markDone(index);
         }
+        window.FocusFlow.markers?.setCurrentTime(video.currentTime || 0);
         if (state && state.token === token) state.pausedByFocusFlow = false;
         safePlay(video);
         return true;
@@ -654,6 +662,7 @@
       if (token.cancelled || overlayOpen || !checkpoints.length) return;
 
       const currentTime = video.currentTime || 0;
+      window.FocusFlow.markers?.setCurrentTime(currentTime);
       if (currentTime < lastTime) {
         lastTime = currentTime;
         return;
@@ -891,6 +900,9 @@
       }
 
       state.checkpoints = checkpoints;
+
+      window.FocusFlow.markers.attach({ checkpoints, durationSeconds, video });
+      window.FocusFlow.markers.setCurrentTime(video.currentTime || 0);
 
       const listener = setupTimeListener(
         videoId,

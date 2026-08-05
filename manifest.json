@@ -45,6 +45,7 @@
         "src/content/validate.js",
         "src/content/ai.js",
         "src/content/overlay.js",
+        "src/content/markers.js",
         "src/content/content.js"
       ],
       "css": [
