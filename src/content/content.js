@@ -623,9 +623,17 @@
         }
 
         const cues = transcript.cues || [];
-        const question =
-          aiQuestions?.[index] ||
-          offlineQuestion(videoId, cues, previousCheckpoint, checkpoint, durationSeconds || video.duration);
+        // With AI on, an absent question means something failed; showing an
+        // offline one here would hide that. Skip the checkpoint instead.
+        const question = aiEnabled(settings)
+          ? aiQuestions?.[index]
+          : aiQuestions?.[index] ||
+            offlineQuestion(videoId, cues, previousCheckpoint, checkpoint, durationSeconds || video.duration);
+        if (!question) {
+          if (state && state.token === token) state.pausedByFocusFlow = false;
+          safePlay(video);
+          return false;
+        }
         const meta = { index: index + 1, total: checkpoints.length };
         if (sectionTitles?.[index]) meta.sectionTitle = sectionTitles[index];
         const result = await window.FocusFlow.overlay.show(question, meta);
@@ -664,6 +672,19 @@
       const currentTime = video.currentTime || 0;
       window.FocusFlow.markers?.setCurrentTime(currentTime);
       if (currentTime < lastTime) {
+        // Rewinding means the viewer is watching that stretch again, so any
+        // checkpoint now ahead of them should ask again — the same reasoning as
+        // the "Rewatch this section" button, which already clears its own
+        // checkpoint. A 1s tolerance keeps ordinary playback jitter from
+        // counting as a rewind.
+        if (currentTime < lastTime - 1) {
+          for (const index of [...answered]) {
+            if (checkpoints[index] > currentTime) {
+              answered.delete(index);
+              window.FocusFlow.markers?.markPending(index);
+            }
+          }
+        }
         lastTime = currentTime;
         return;
       }
@@ -860,8 +881,8 @@
         }
       }
 
-      // Fallback chain: timed checkpoints with per-chunk AI questions, then
-      // offline questions. This must keep working so a video never breaks.
+      // Fallback chain: timed checkpoints with per-chunk AI questions. Offline
+      // questions are only used when the viewer has deliberately turned AI off.
       if (!usedSegmentation) {
         checkpoints = makeCheckpoints(durationSeconds, settings.chunkMinutes);
         if (!checkpoints.length) {
@@ -897,6 +918,59 @@
           traceResponseSteps(aiResult.trace, (aiQuestions || []).filter(Boolean).length, roundTripMs);
         }
         if (!aiQuestions) traceWarn(2, 'AI questions unavailable: ' + describeReason(aiResult.reason));
+      }
+
+      // When AI questions are switched on, never quietly stand in offline
+      // questions for them. A viewer who asked for AI and silently got
+      // template questions has no way to tell that anything went wrong, and
+      // neither does anyone trying to debug it. Say so instead.
+      if (aiEnabled(settings)) {
+        const usableCount = (aiQuestions || []).filter(Boolean).length;
+
+        if (!usableCount) {
+          trace(5, 'Questions loaded', {
+            mode: 'none',
+            checkpoints: 0,
+            aiQuestions: 0,
+            offlineQuestions: 0,
+            timestamps: [],
+          });
+          const why = describeReason(aiReason);
+          await writeStatus({
+            ...baseStatus,
+            checkpointCount: 0,
+            questionSource: 'none',
+            aiActive: false,
+            aiReason,
+            segmentMode: usedSegmentation,
+            reason: `No AI questions: ${why}`,
+          });
+          // Longer than the usual toast: this one explains why nothing is
+          // going to happen, so it is worth making hard to miss.
+          window.FocusFlow.overlay.toast(`FocusFlow: no questions - ${why}`, 12000);
+          return;
+        }
+
+        // A partial result padded the gaps with question-less checkpoints.
+        // Drop those rather than filling them in offline, and report the gap.
+        if (usableCount < checkpoints.length) {
+          const kept = [];
+          const keptQuestions = [];
+          const keptTitles = [];
+          checkpoints.forEach((time, i) => {
+            if (!aiQuestions?.[i]) return;
+            kept.push(time);
+            keptQuestions.push(aiQuestions[i]);
+            keptTitles.push(sectionTitles?.[i] || '');
+          });
+          traceWarn(
+            2,
+            `${checkpoints.length - usableCount} of ${checkpoints.length} checkpoints had no AI question and were dropped (${describeReason(aiReason)})`
+          );
+          checkpoints = kept;
+          aiQuestions = keptQuestions;
+          sectionTitles = usedSegmentation ? keptTitles : null;
+        }
       }
 
       state.checkpoints = checkpoints;

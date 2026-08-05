@@ -92,10 +92,10 @@ window.FocusFlow.overlay = (() => {
     });
   }
 
-  function toast(message) {
+  function toast(message, durationMs = 4000) {
     const node = el('div', 'ff-toast', message);
     mountPoint().appendChild(node);
-    setTimeout(() => node.remove(), 4000);
+    setTimeout(() => node.remove(), durationMs);
   }
 
   return { show, destroy, toast };
