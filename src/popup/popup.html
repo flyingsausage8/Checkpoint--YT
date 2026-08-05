@@ -32,6 +32,15 @@
         font-size: 14px;
       }
 
+      /* The browser's own stylesheet hides [hidden] elements with display:none,
+         but ANY rule we write here beats it — so a plain `.hint { display: block }`
+         silently makes a hidden element visible forever, no matter what the code
+         sets. That is a real bug we shipped: the "session expired" note and the
+         account switcher were permanently on screen. This rule restores the
+         meaning of the hidden attribute for every element, so setting
+         `el.hidden = true` in JS actually hides it. */
+      [hidden] { display: none !important; }
+
       .stack { display: block; }
       .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 
@@ -114,7 +123,7 @@
   </head>
   <body>
     <h1>FocusFlow</h1>
-    <p>Phase 2 is active: YouTube captions plus offline questions. AI is off.</p>
+    <p>Splits long videos into sections and asks a question at each one, so it is easier to keep going.</p>
 
     <!--
       Account area. We use "Sign in with Google" — there is deliberately no
