@@ -18,10 +18,18 @@
   const CACHE = new Map(); // videoId -> caption track array
   const TIMEDTEXT = new Map(); // videoId (the `v` param) -> full pot-bearing URL
   const PANELCUES = new Map(); // videoId -> { cues:[{start,text}], endpoint }
+  const LENGTHS = new Map(); // videoId -> real length in seconds (ads cannot skew it)
 
   function readTracks(playerResponse) {
     try {
       const details = playerResponse?.videoDetails;
+      // Record the real length first. The <video> element reports an ad's
+      // duration while a pre-roll plays, so this is the only value the
+      // extension can trust when deciding where checkpoints belong.
+      const length = Number(details?.lengthSeconds);
+      if (details?.videoId && isFinite(length) && length > 0) {
+        LENGTHS.set(details.videoId, length);
+      }
       const tracks =
         playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
       if (!details?.videoId || !Array.isArray(tracks) || !tracks.length) return;
@@ -237,7 +245,9 @@
 
   window.addEventListener('focusflow:request-tracks', (event) => {
     const videoId = event.detail?.videoId;
-    if (!CACHE.has(videoId)) readTracks(window.ytInitialPlayerResponse);
+    if (!CACHE.has(videoId) || !LENGTHS.has(videoId)) {
+      readTracks(window.ytInitialPlayerResponse);
+    }
 
     window.dispatchEvent(
       new CustomEvent('focusflow:tracks', {
@@ -247,6 +257,7 @@
           timedTextUrl: TIMEDTEXT.get(videoId) || null,
           panelCues: PANELCUES.get(videoId)?.cues || null,
           panelCuesSource: PANELCUES.get(videoId)?.endpoint || null,
+          lengthSeconds: LENGTHS.get(videoId) || null,
         },
       })
     );

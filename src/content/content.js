@@ -155,6 +155,83 @@
     return null;
   }
 
+  // YouTube reuses the same <video> element for pre-roll ads, so its `duration`
+  // reports the ad length (e.g. 28s) or NaN before metadata loads. Detect the ad
+  // state so we never plan checkpoints against an advertisement's timeline.
+  function isAdShowing() {
+    const player = document.querySelector('#movie_player');
+    if (player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'))) {
+      return true;
+    }
+    return Boolean(document.querySelector('.ad-showing, .ytp-ad-player-overlay, .ytp-ad-module .ytp-ad-text'));
+  }
+
+  // Ask the page world (mainWorld.js) for the authoritative video length through
+  // the existing tracks bridge. lengthSeconds comes from ytInitialPlayerResponse
+  // and is unaffected by ads, so it is our cross-check against the <video>
+  // element. Resolves to a positive number or null if the page world does not
+  // supply it (e.g. an older mainWorld build without lengthSeconds).
+  function requestPageLength(videoId, timeoutMs = 4000) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const onTracks = (event) => {
+        const detail = event.detail || {};
+        if (detail.videoId && videoId && detail.videoId !== videoId) return;
+        const length = Number(detail.lengthSeconds);
+        // mainWorld answers each request with exactly one tracks event, so the
+        // first matching reply is authoritative: use its length if valid, else
+        // resolve null immediately rather than stalling until the timeout.
+        finish(Number.isFinite(length) && length > 0 ? length : null);
+      };
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('focusflow:tracks', onTracks);
+        if (timer) clearTimeout(timer);
+        resolve(value);
+      }
+      window.addEventListener('focusflow:tracks', onTracks);
+      try {
+        window.dispatchEvent(new CustomEvent('focusflow:request-tracks', { detail: { videoId } }));
+      } catch (_) {
+        /* page world not reachable */
+      }
+      timer = setTimeout(() => finish(null), timeoutMs);
+    });
+  }
+
+  // Returns a trustworthy duration in seconds ({ seconds, source, elementDuration })
+  // or null if none can be obtained within the timeout. Waits out ad playback and
+  // unloaded metadata, and prefers the page-world lengthSeconds when the <video>
+  // element disagrees with it by a wide margin (which is what happens while an
+  // ad's duration is being reported by the shared element).
+  async function resolveDuration(video, videoId, token) {
+    const pageLength = await requestPageLength(videoId);
+    const deadline = Date.now() + 30000;
+    let lastSeen = null;
+
+    while (Date.now() < deadline && !token.cancelled) {
+      const adShowing = isAdShowing();
+      const elementDuration = Number(video.duration);
+      const elementUsable = Number.isFinite(elementDuration) && elementDuration > 0;
+      if (elementUsable) lastSeen = elementDuration;
+
+      if (!adShowing && elementUsable) {
+        if (pageLength && Math.abs(pageLength - elementDuration) > Math.max(30, pageLength * 0.25)) {
+          return { seconds: pageLength, source: 'lengthSeconds', elementDuration };
+        }
+        return { seconds: elementDuration, source: 'video', elementDuration };
+      }
+
+      await sleep(250);
+    }
+
+    if (pageLength) return { seconds: pageLength, source: 'lengthSeconds-timeout', elementDuration: lastSeen };
+    if (Number.isFinite(lastSeen) && lastSeen > 0) return { seconds: lastSeen, source: 'video-timeout', elementDuration: lastSeen };
+    return null;
+  }
+
   function makeCheckpoints(duration, chunkMinutes) {
     const chunkSeconds = chunkMinutes * 60;
     const checkpoints = [];
@@ -241,17 +318,32 @@
 
     entries.sort((a, b) => a.time - b.time);
 
+    // Only apply the end-buffer trim when we actually know the true duration.
+    // Guarding on a finite duration prevents a bad value (an ad's length or NaN)
+    // from silently discarding every section.
+    const hasDuration = Number.isFinite(duration) && duration > 0;
+    const endLimit = hasDuration ? duration - END_BUFFER_SECONDS : Infinity;
+
     const checkpoints = [];
     const aiQuestions = [];
     const sectionTitles = [];
     let last = -Infinity;
     for (const entry of entries) {
-      if (entry.time <= 0 || entry.time >= duration - END_BUFFER_SECONDS) continue;
+      if (entry.time <= 0) continue;
+      if (hasDuration && entry.time >= duration) continue;
       if (entry.time - last < 1) continue;
       checkpoints.push(entry.time);
       aiQuestions.push(entry.question);
       sectionTitles.push(entry.title);
       last = entry.time;
+    }
+
+    // Drop only trailing checkpoints that genuinely sit within END_BUFFER_SECONDS
+    // of the real end, rather than throwing away every usable section.
+    while (hasDuration && checkpoints.length && checkpoints[checkpoints.length - 1] >= endLimit) {
+      checkpoints.pop();
+      aiQuestions.pop();
+      sectionTitles.pop();
     }
     return { checkpoints, aiQuestions, sectionTitles };
   }
@@ -276,7 +368,7 @@
   // Issue #1: ask the AI where the natural section breaks are. Returns
   // { sections, reason, trace, cached, failedWindows, totalWindows }. `sections`
   // is null on total failure so the caller can fall back to timed checkpoints.
-  async function loadAISections(videoId, title, transcript, video, settings, onRequestSent) {
+  async function loadAISections(videoId, title, transcript, durationSeconds, settings, onRequestSent) {
     if (!aiEnabled(settings)) return { sections: null, reason: 'AI questions are turned off' };
 
     const cues = transcript.cues || [];
@@ -308,7 +400,7 @@
       videoId,
       title,
       cues,
-      durationSeconds: video.duration,
+      durationSeconds,
       settings,
       onRequestSent,
     });
@@ -473,7 +565,7 @@
     state = null;
   }
 
-  function setupTimeListener(videoId, video, checkpoints, transcript, settings, token, aiQuestions, sectionTitles) {
+  function setupTimeListener(videoId, video, checkpoints, transcript, settings, token, aiQuestions, sectionTitles, durationSeconds) {
     const answered = new Set();
     let lastTime = video.currentTime || 0;
     let overlayOpen = false;
@@ -495,7 +587,7 @@
         const cues = transcript.cues || [];
         const question =
           aiQuestions?.[index] ||
-          offlineQuestion(videoId, cues, previousCheckpoint, checkpoint, video.duration);
+          offlineQuestion(videoId, cues, previousCheckpoint, checkpoint, durationSeconds || video.duration);
         const meta = { index: index + 1, total: checkpoints.length };
         if (sectionTitles?.[index]) meta.sectionTitle = sectionTitles[index];
         const result = await window.FocusFlow.overlay.show(question, meta);
@@ -572,6 +664,7 @@
       title: '',
       checkpoints: [],
       transcript: null,
+      durationSeconds: null,
       onTimeUpdate: null,
       triggerNow: null,
       pausedByFocusFlow: false,
@@ -595,6 +688,24 @@
       state.transcript = transcript;
       state.title = pageTitle();
 
+      // Bug fix: the shared <video> element reports the pre-roll ad's duration
+      // (or NaN) until real playback starts, so resolve a trustworthy duration
+      // before planning anything against it.
+      const durationInfo = await resolveDuration(video, videoId, token);
+      if (token.cancelled) return;
+      const durationSeconds = durationInfo ? durationInfo.seconds : null;
+      if (durationInfo && durationInfo.source !== 'video') {
+        log(
+          'Using video length',
+          durationSeconds,
+          'from',
+          durationInfo.source,
+          '(<video> reported',
+          durationInfo.elementDuration,
+          ')'
+        );
+      }
+
       const cues = transcript.cues || [];
       const transcriptChars = cues.reduce((sum, cue) => sum + String(cue.text || '').length, 0);
       if (transcript.source === 'none') {
@@ -604,7 +715,7 @@
           source: transcript.source,
           cues: cues.length,
           chars: transcriptChars,
-          durationSeconds: Math.round(video.duration),
+          durationSeconds: durationSeconds != null ? Math.round(durationSeconds) : 'unknown',
         });
       }
 
@@ -612,7 +723,7 @@
         ready: false,
         videoId,
         title: state.title,
-        durationSeconds: Math.round(video.duration),
+        durationSeconds: durationSeconds != null ? Math.round(durationSeconds) : 0,
         chunkMinutes: settings.chunkMinutes,
         minVideoMinutes: settings.minVideoMinutes,
         checkpointCount: 0,
@@ -622,10 +733,20 @@
         aiActive: false,
       };
 
-      if (video.duration < settings.minVideoMinutes * 60) {
+      // Without a reliable duration we cannot place checkpoints at all; log it
+      // loudly instead of silently planning against an ad or NaN.
+      if (durationSeconds == null) {
+        traceWarn(1, 'could not determine a reliable video length (ad still playing or metadata never loaded); skipping checkpoints');
+        await writeStatus({ ...baseStatus, reason: 'Could not determine the video length' });
+        return;
+      }
+
+      if (durationSeconds < settings.minVideoMinutes * 60) {
         await writeStatus({ ...baseStatus, reason: 'Video is shorter than the minimum' });
         return;
       }
+
+      state.durationSeconds = durationSeconds;
 
       let checkpoints = null;
       let aiQuestions = null;
@@ -646,7 +767,7 @@
         const startedAt = Date.now();
         let segResult;
         try {
-          segResult = await loadAISections(videoId, state.title, transcript, video, settings, onRequestSent);
+          segResult = await loadAISections(videoId, state.title, transcript, durationSeconds, settings, onRequestSent);
         } finally {
           clearInterval(heartbeat);
         }
@@ -671,7 +792,7 @@
           const plan = planFromSections(
             segResult.sections,
             segResult.failedWindows,
-            video.duration,
+            durationSeconds,
             settings.chunkMinutes
           );
           if (plan.checkpoints.length) {
@@ -692,8 +813,17 @@
       // Fallback chain: timed checkpoints with per-chunk AI questions, then
       // offline questions. This must keep working so a video never breaks.
       if (!usedSegmentation) {
-        checkpoints = makeCheckpoints(video.duration, settings.chunkMinutes);
+        checkpoints = makeCheckpoints(durationSeconds, settings.chunkMinutes);
         if (!checkpoints.length) {
+          // Very short video: still emit STEP 5 so the pipeline never ends
+          // silently, then report why there are no checkpoints.
+          trace(5, 'Questions loaded', {
+            mode: 'offline',
+            checkpoints: 0,
+            aiQuestions: 0,
+            offlineQuestions: 0,
+            timestamps: [],
+          });
           await writeStatus({ ...baseStatus, reason: 'No checkpoints fit before the end' });
           return;
         }
@@ -729,7 +859,8 @@
         settings,
         token,
         aiQuestions,
-        sectionTitles
+        sectionTitles,
+        durationSeconds
       );
       state.onTimeUpdate = listener.onTimeUpdate;
       state.triggerNow = listener.triggerNow;
@@ -791,7 +922,8 @@
   function progressSnapshot() {
     if (!state?.video) return null;
     const video = state.video;
-    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const resolved = Number.isFinite(state.durationSeconds) && state.durationSeconds > 0 ? state.durationSeconds : 0;
+    const duration = resolved || (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0);
     const current = Math.min(duration, Math.max(0, video.currentTime || 0));
     const checkpoints = state.checkpoints || [];
     const nextIndex = checkpoints.findIndex((time) => current < time);
@@ -847,7 +979,7 @@
         source: state.transcript.source,
         cues: state.transcript.cues || [],
         checkpoints: state.checkpoints || [],
-        durationSeconds: state.video.duration || 0,
+        durationSeconds: state.durationSeconds || state.video.duration || 0,
       });
       return false;
     }
@@ -857,7 +989,11 @@
         notReady(sendResponse);
         return false;
       }
-      const duration = Number.isFinite(state.video.duration) ? state.video.duration : 0;
+      const duration = Number.isFinite(state.durationSeconds) && state.durationSeconds > 0
+        ? state.durationSeconds
+        : Number.isFinite(state.video.duration)
+        ? state.video.duration
+        : 0;
       const seconds = Math.min(duration, Math.max(0, Number(message.seconds) || 0));
       state.video.currentTime = seconds;
       safePlay(state.video);
