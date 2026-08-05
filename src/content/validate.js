@@ -49,7 +49,14 @@ window.FocusFlow.validate = (() => {
 
   function questions(raw, expectedCount) {
     if (!Array.isArray(raw)) return null;
-    const valid = raw.map(normaliseItem).filter(Boolean);
+    const valid = raw
+      .map((item) => {
+        const normalised = normaliseItem(item);
+        if (!normalised) return null;
+        // Keep the chunk index so callers can align questions to checkpoints.
+        return Number.isInteger(item.index) ? { ...normalised, index: item.index } : normalised;
+      })
+      .filter(Boolean);
     const needed = Math.max(1, Math.ceil(Number(expectedCount || 0) / 2));
     return valid.length >= needed ? valid : null;
   }

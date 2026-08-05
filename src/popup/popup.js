@@ -119,6 +119,7 @@ function renderStatus(status) {
     ['Captions', status.captionsSource || 'unknown'],
     ['Cues', String(status.transcriptCueCount ?? 0)],
     ['Questions', status.questionSource || 'offline'],
+    ['Why', status.aiReason && status.aiReason !== 'ok' ? status.aiReason : 'AI questions active'],
     ['Note', status.reason || 'OK'],
   ]);
 }

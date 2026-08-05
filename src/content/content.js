@@ -159,36 +159,83 @@
   }
 
   async function loadAIQuestions(videoId, title, chunks, transcript, settings) {
-    if (!aiEnabled(settings)) return null;
+    if (!aiEnabled(settings)) return { questions: null, reason: 'AI questions are turned off' };
 
     const key = `questions:${videoId}`;
-    if (questionCache.has(videoId)) return questionCache.get(videoId);
+    if (questionCache.has(videoId)) {
+      return { questions: questionCache.get(videoId), reason: 'ok' };
+    }
 
     try {
       const saved = await storageGet('local', key);
       const cached = window.FocusFlow.validate.questions(saved[key]?.questions, chunks.length);
       if (cached) {
-        questionCache.set(videoId, cached);
-        return cached;
+        const restored = alignToChunks(cached, chunks);
+        questionCache.set(videoId, restored);
+        return { questions: restored, reason: 'ok' };
       }
     } catch (error) {
       log('Could not read AI question cache:', error);
     }
 
-    const enoughTranscript = wordCount(chunks.map((chunk) => chunk.text).join(' ')) > MIN_AI_WORDS;
-    if (transcript.source === 'none' || !enoughTranscript) return null;
+    if (transcript.source === 'none') {
+      return { questions: null, reason: 'This video has no captions to read' };
+    }
+    if (wordCount(chunks.map((chunk) => chunk.text).join(' ')) <= MIN_AI_WORDS) {
+      return { questions: null, reason: 'Captions are too short for AI questions' };
+    }
 
-    const questions = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks });
-    if (!questions) return null;
+    const result = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks });
+    if (!result?.questions) {
+      return { questions: null, reason: describeAIError(result?.reason) };
+    }
 
-    questionCache.set(videoId, questions);
+    questionCache.set(videoId, result.questions);
     try {
-      await storageSet('local', { [key]: { createdAt: Date.now(), questions } });
+      const storable = result.questions.filter(Boolean);
+      await storageSet('local', { [key]: { createdAt: Date.now(), questions: storable } });
       await evictQuestionCache();
     } catch (error) {
       log('Could not cache AI questions:', error);
     }
-    return questions;
+
+    const reason =
+      result.reason === 'partial'
+        ? `AI covered ${result.covered} of ${result.total} checkpoints`
+        : 'ok';
+    return { questions: result.questions, reason };
+  }
+
+  // Cached questions carry their chunk index, so they can be restored into the
+  // right slots even if the chunk length setting changed since they were saved.
+  function alignToChunks(questions, chunks) {
+    const bySlot = new Array(chunks.length).fill(null);
+    questions.forEach((question, position) => {
+      const slot = Number.isInteger(question.index)
+        ? chunks.findIndex((chunk) => chunk.index === question.index)
+        : position;
+      if (slot >= 0 && slot < bySlot.length && !bySlot[slot]) bySlot[slot] = question;
+    });
+    return bySlot;
+  }
+
+  function describeAIError(code) {
+    const messages = {
+      http_400: 'Backend rejected the request',
+      http_403: 'Backend refused this extension',
+      http_413: 'Transcript was too large',
+      http_429: 'Hit the hourly AI limit - try again later',
+      http_500: 'Backend error',
+      http_502: 'AI returned an unusable answer',
+      timeout: 'Backend timed out',
+      network: 'Could not reach the backend',
+      invalid_output: 'AI returned an unusable answer',
+    };
+    if (code && messages[code]) return messages[code];
+    if (typeof code === 'string' && code.includes('Receiving end does not exist')) {
+      return 'Background service worker is not running - reload the extension';
+    }
+    return `AI unavailable (${code || 'unknown'})`;
   }
 
   function safePlay(video) {
@@ -381,8 +428,9 @@
       }
 
       const chunks = buildChunks(transcript.cues || [], checkpoints);
-      const aiQuestions = await loadAIQuestions(videoId, baseStatus.title, chunks, transcript, settings);
+      const aiResult = await loadAIQuestions(videoId, baseStatus.title, chunks, transcript, settings);
       if (token.cancelled) return;
+      const aiQuestions = aiResult.questions;
 
       const listener = setupTimeListener(
         videoId,
@@ -396,11 +444,17 @@
       state.onTimeUpdate = listener.onTimeUpdate;
       state.triggerNow = listener.triggerNow;
 
-      const questionSource = aiQuestions ? 'AI questions ready' : 'offline questions';
+      const aiActive = Boolean(aiQuestions);
+      const questionSource = aiActive
+        ? aiResult.reason === 'ok'
+          ? 'AI questions ready'
+          : aiResult.reason
+        : `offline questions - ${aiResult.reason}`;
       await writeStatus({
         ...baseStatus,
-        questionSource: aiQuestions ? 'AI' : 'offline',
-        aiActive: Boolean(aiQuestions),
+        questionSource: aiActive ? 'AI' : 'offline',
+        aiActive,
+        aiReason: aiResult.reason,
         ready: true,
       });
       window.FocusFlow.overlay.toast(`FocusFlow: ${checkpoints.length} checkpoints - ${questionSource}`);
