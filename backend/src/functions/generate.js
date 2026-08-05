@@ -322,7 +322,7 @@ async function callAzureOpenAI(input, config, context = console, messageBuilder 
 
   const response = await fetch(url, {
     method: 'POST',
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(45000),
     headers: {
       'Content-Type': 'application/json',
       'api-key': config.apiKey,

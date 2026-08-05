@@ -274,6 +274,29 @@ window.FocusFlow.captions = (() => {
     }
   }
 
+  // Poll for the transcript control, re-running the description expander each
+  // round. The watch page hydrates in stages, so a control that is absent at
+  // 1s routinely appears at 5s — a single early attempt is not enough.
+  async function waitForTranscriptButton(timeout = 15000) {
+    const deadline = Date.now() + timeout;
+    let attempts = 0;
+    while (Date.now() < deadline) {
+      const found = findTranscriptButton();
+      if (found) {
+        if (attempts) {
+          console.debug(
+            `[FocusFlow] panel: transcript button appeared after ${attempts} retries.`
+          );
+        }
+        return found;
+      }
+      await expandDescription();
+      attempts += 1;
+      await sleep(500);
+    }
+    return findTranscriptButton();
+  }
+
   // Find the scroll container that holds the virtualised transcript rows.
   function transcriptScroller() {
     const anySegment = document.querySelector('ytd-transcript-segment-renderer');
@@ -336,9 +359,10 @@ window.FocusFlow.captions = (() => {
   }
 
   async function viaPanel(videoId) {
-    if (!findTranscriptButton()) await expandDescription();
-
-    const button = await waitFor(findTranscriptButton, { timeout: 4000 });
+    // YouTube hydrates the watch page progressively: on a cold load the
+    // "Transcript" control often does not exist until 4-6s in. Keep retrying
+    // the description expander while we wait instead of giving up early.
+    const button = await waitForTranscriptButton(15000);
     if (!button) {
       console.warn(
         '[FocusFlow] panel: "Show transcript" button not found on this layout.'
@@ -351,7 +375,7 @@ window.FocusFlow.captions = (() => {
 
     // Opening the panel makes YouTube call /youtubei/v1/get_transcript, which the
     // page-world interceptor captures in full. Prefer that over DOM scraping.
-    const intercepted = await pollInterceptedCues(videoId, 2500);
+    const intercepted = await pollInterceptedCues(videoId, 5000);
     if (intercepted?.cues?.length) {
       if (!alreadyOpen) button.click();
       const cues = dedupCues(intercepted.cues);
@@ -363,7 +387,7 @@ window.FocusFlow.captions = (() => {
         const found = document.querySelectorAll('ytd-transcript-segment-renderer');
         return found.length ? found : null;
       },
-      { timeout: 8000 }
+      { timeout: 12000 }
     );
     if (!segments) {
       if (!alreadyOpen) button.click();

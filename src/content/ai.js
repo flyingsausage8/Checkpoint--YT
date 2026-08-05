@@ -10,10 +10,13 @@ window.FocusFlow.ai = (() => {
   const MAX_CHUNKS_PER_REQUEST = 12;
   const MAX_CHARS_PER_REQUEST = 40000;
 
-  // Segment mode limits. Keep each window well under the backend's 1200-line /
-  // 50k-char caps so a long video is split into several contiguous requests.
-  const MAX_LINES_PER_WINDOW = 900;
-  const MAX_CHARS_PER_WINDOW = 35000;
+  // Segment mode limits. Small windows keep each request fast (a single large
+  // window took ~22s of model time); we then run windows in parallel and stitch
+  // the results back together in time order.
+  const MAX_LINES_PER_WINDOW = 400;
+  const MAX_CHARS_PER_WINDOW = 10000;
+  const MAX_WINDOW_SECONDS = 600;
+  const MAX_CONCURRENT_WINDOWS = 4;
 
   // The network call is delegated to the background service worker. Fetching
   // from here would carry YouTube's origin and be blocked by CORS.
@@ -69,9 +72,29 @@ window.FocusFlow.ai = (() => {
     return batches;
   }
 
+  // Runs `worker` over items with at most `limit` in flight at once, returning
+  // results in the original item order regardless of completion order.
+  async function mapLimit(items, limit, worker) {
+    const results = new Array(items.length);
+    let next = 0;
+    async function run() {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await worker(items[i], i);
+      }
+    }
+    const runners = [];
+    for (let i = 0; i < Math.min(limit, items.length); i++) runners.push(run());
+    await Promise.all(runners);
+    return results;
+  }
+
   // Returns { questions, reason }. `questions` is a sparse array indexed by
   // chunk index so a partial result still improves the checkpoints it covers.
-  async function generateForVideo({ videoId, title, chunks }) {
+  // `onRequestSent` (optional) fires synchronously just before each request is
+  // dispatched, so callers can log the request at send time, not on resolution.
+  async function generateForVideo({ videoId, title, chunks, onRequestSent }) {
     if (!AI_PROXY_ENABLED_IN_THIS_BUILD) return { questions: null, reason: 'disabled_in_build' };
     if (!videoId || !Array.isArray(chunks) || !chunks.length) {
       return { questions: null, reason: 'no_chunks' };
@@ -93,8 +116,14 @@ window.FocusFlow.ai = (() => {
       requests: 0,
     };
 
+    let batchIndex = 0;
     for (const batch of batches) {
-      charsSent += batch.reduce((sum, chunk) => sum + String(chunk.text || '').length, 0);
+      batchIndex += 1;
+      const chars = batch.reduce((sum, chunk) => sum + String(chunk.text || '').length, 0);
+      charsSent += chars;
+      if (typeof onRequestSent === 'function') {
+        onRequestSent({ mode: 'questions', windowIndex: batchIndex, totalWindows: batches.length, chars });
+      }
       const result = await askBackground({ videoId, title, chunks: batch });
       if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
@@ -149,9 +178,9 @@ window.FocusFlow.ai = (() => {
   }
 
   // Groups transcript lines into contiguous time windows that each stay under
-  // the per-request line and character caps. Windows tile the whole video: the
-  // first starts at 0, each following one starts where the previous ended, and
-  // the last runs to durationSeconds so nothing is left uncovered.
+  // the per-request line, character, and duration caps. Windows tile the whole
+  // video: the first starts at 0, each following one starts where the previous
+  // ended, and the last runs to durationSeconds so nothing is left uncovered.
   function buildWindows(lines, durationSeconds) {
     const groups = [];
     let current = [];
@@ -159,9 +188,11 @@ window.FocusFlow.ai = (() => {
 
     for (const line of lines) {
       const size = line.text.length;
+      const windowStartT = current.length ? current[0].t : line.t;
       const tooManyLines = current.length >= MAX_LINES_PER_WINDOW;
       const tooManyChars = current.length > 0 && chars + size > MAX_CHARS_PER_WINDOW;
-      if (tooManyLines || tooManyChars) {
+      const tooLong = current.length > 0 && line.t - windowStartT > MAX_WINDOW_SECONDS;
+      if (tooManyLines || tooManyChars || tooLong) {
         groups.push(current);
         current = [];
         chars = 0;
@@ -178,10 +209,12 @@ window.FocusFlow.ai = (() => {
     }));
   }
 
-  // Returns { sections, reason, diagnostics, trace }. `sections` is null when no
-  // window produced usable output. Sections are concatenated across windows in
-  // time order and their question index is renumbered sequentially (1-based).
-  async function segmentVideo({ videoId, title, cues, durationSeconds, settings }) {
+  // Returns { sections, reason, diagnostics, trace, failedWindows, totalWindows,
+  // succeededWindows }. `sections` is null when no window produced usable output.
+  // Windows are dispatched in parallel (capped) and their sections are stitched
+  // back in time order, with question index renumbered sequentially (1-based).
+  // `onRequestSent` (optional) fires just before each window is dispatched.
+  async function segmentVideo({ videoId, title, cues, durationSeconds, settings, onRequestSent }) {
     if (!AI_PROXY_ENABLED_IN_THIS_BUILD) return { sections: null, reason: 'disabled_in_build' };
     if (!videoId || !Array.isArray(cues) || !cues.length) {
       return { sections: null, reason: 'no_transcript' };
@@ -196,12 +229,34 @@ window.FocusFlow.ai = (() => {
     if (!lines.length) return { sections: null, reason: 'no_transcript' };
 
     const total = Math.max(Number(durationSeconds) || 0, lines[lines.length - 1].t + 1);
+    // Treat the chunk-length setting as a target section length so the setting
+    // stays meaningful: sections land between half and 1.5x the target.
     const target = ((settings && settings.chunkMinutes) || 3) * 60;
-    const minSectionSeconds = Math.max(45, Math.round(target * 0.6));
-    const maxSectionSeconds = Math.max(minSectionSeconds + 60, Math.round(target * 2));
+    const minSectionSeconds = Math.max(45, Math.round(target * 0.5));
+    const maxSectionSeconds = Math.max(minSectionSeconds + 60, Math.round(target * 1.5));
 
-    const windows = buildWindows(lines, total);
+    const windows = buildWindows(lines, total).filter((win) => win.windowEnd > win.windowStart);
+    const totalWindows = windows.length;
+
+    const results = await mapLimit(windows, MAX_CONCURRENT_WINDOWS, async (win, i) => {
+      const chars = win.lines.reduce((sum, line) => sum + line.text.length, 0);
+      if (typeof onRequestSent === 'function') {
+        onRequestSent({ mode: 'segment', windowIndex: i + 1, totalWindows, chars });
+      }
+      const result = await askSegment({
+        videoId,
+        title,
+        windowStart: win.windowStart,
+        windowEnd: win.windowEnd,
+        minSectionSeconds,
+        maxSectionSeconds,
+        lines: win.lines,
+      });
+      return { win, chars, result };
+    });
+
     const collected = [];
+    const failedWindows = [];
     let endpoint = null;
     let charsSent = 0;
     let lastError = null;
@@ -214,22 +269,13 @@ window.FocusFlow.ai = (() => {
       windows: 0,
     };
 
-    for (const win of windows) {
-      if (win.windowEnd <= win.windowStart) continue;
-      charsSent += win.lines.reduce((sum, line) => sum + line.text.length, 0);
-      const result = await askSegment({
-        videoId,
-        title,
-        windowStart: win.windowStart,
-        windowEnd: win.windowEnd,
-        minSectionSeconds,
-        maxSectionSeconds,
-        lines: win.lines,
-      });
+    for (const { win, chars, result } of results) {
+      charsSent += chars;
       if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
         console.warn('[FocusFlow] segment window failed:', lastError);
+        failedWindows.push({ windowStart: win.windowStart, windowEnd: win.windowEnd });
         continue;
       }
 
@@ -237,13 +283,14 @@ window.FocusFlow.ai = (() => {
         diagnostics.receivedLines += result.diagnostics.receivedLines || 0;
         diagnostics.receivedChars += result.diagnostics.receivedChars || 0;
         diagnostics.deployment = result.diagnostics.deployment || diagnostics.deployment;
-        diagnostics.modelLatencyMs += result.diagnostics.modelLatencyMs || 0;
+        diagnostics.modelLatencyMs = Math.max(diagnostics.modelLatencyMs, result.diagnostics.modelLatencyMs || 0);
         diagnostics.windows += 1;
       }
 
       const validated = window.FocusFlow.validate.sections(result.sections);
       if (!validated) {
         lastError = 'invalid_output';
+        failedWindows.push({ windowStart: win.windowStart, windowEnd: win.windowEnd });
         continue;
       }
       collected.push(...validated);
@@ -252,19 +299,30 @@ window.FocusFlow.ai = (() => {
     const trace = {
       mode: 'segment',
       endpoint,
-      requests: windows.length,
+      requests: totalWindows,
       charsSent,
       diagnostics,
       returned: collected.length,
     };
 
-    if (!collected.length) return { sections: null, reason: lastError || 'no_sections', trace };
+    if (!collected.length) {
+      return { sections: null, reason: lastError || 'no_sections', trace, failedWindows, totalWindows };
+    }
 
-    const sections = collected.map((section, i) => ({
-      ...section,
-      question: { ...section.question, index: i + 1 },
-    }));
-    return { sections, reason: 'ok', diagnostics, trace };
+    const sections = collected
+      .slice()
+      .sort((a, b) => a.startSeconds - b.startSeconds)
+      .map((section, i) => ({ ...section, question: { ...section.question, index: i + 1 } }));
+
+    return {
+      sections,
+      reason: failedWindows.length ? 'partial' : 'ok',
+      diagnostics,
+      trace,
+      failedWindows,
+      totalWindows,
+      succeededWindows: totalWindows - failedWindows.length,
+    };
   }
 
   return { generateForVideo, segmentVideo, DEFAULT_PROXY_URL };

@@ -40,22 +40,43 @@
   const traceWarn = (step, message) =>
     console.warn('[FocusFlow] STEP ' + step + '/5 FAILED - ' + message);
 
-  // Steps 2-4 read the diagnostics the background worker relayed from the
-  // backend, so the user never has to look in the service worker console.
-  function traceRequestSteps(info, returnedCount, roundTripMs) {
-    if (!info) return;
+  // Bug 1: STEP 2 must be logged when the request is dispatched, not when it
+  // resolves ~25s later. This fires synchronously from ai.js, once per window.
+  function traceRequestSent(endpoint, info) {
     trace(2, 'API request sent to Azure', {
-      endpoint: info.endpoint,
+      endpoint,
       mode: info.mode,
-      requests: info.requests,
-      charsSent: info.charsSent,
+      window: info.totalWindows > 1 ? `${info.windowIndex}/${info.totalWindows}` : `1/${info.totalWindows || 1}`,
+      chars: info.chars,
     });
-    if (info.diagnostics && info.diagnostics.deployment) {
+  }
+
+  // STEP 3 and STEP 4 stay after the response returns, reading the diagnostics
+  // the background worker relayed from the backend.
+  function traceResponseSteps(info, returnedCount, roundTripMs) {
+    if (info?.diagnostics && info.diagnostics.deployment) {
       trace(3, 'Model received transcript and instructions', info.diagnostics);
     } else {
       traceWarn(3, 'backend returned no model diagnostics');
     }
     trace(4, 'Model returned questions', { returned: returnedCount, roundTripMs });
+  }
+
+  // Bug 1: a heartbeat so a long request never looks like a hang. Logs every
+  // 10s until cleared in the caller's finally.
+  function startHeartbeat() {
+    let elapsed = 0;
+    return setInterval(() => {
+      elapsed += 10;
+      console.log(`[FocusFlow] STEP 3/5 waiting on Azure... ${elapsed}s`);
+    }, 10000);
+  }
+
+  // Mirrors background.endpointFromBase so STEP 2 can name the real endpoint at
+  // dispatch time, before the worker's response (which carries it) comes back.
+  function resolveEndpoint(proxyUrl) {
+    const url = String(proxyUrl || DEFAULT_PROXY_URL).trim().replace(/\/+$/, '');
+    return url.endsWith('/generate') ? url : `${url}/api/generate`;
   }
 
   function formatTime(seconds) {
@@ -142,7 +163,11 @@
     const key = `transcript:${videoId}`;
     try {
       const saved = await storageGet('local', key);
-      if (saved[key]?.cues) {
+      // Only trust a cached transcript that actually has content. Caching a
+      // failure would permanently poison the video: caption extraction fails
+      // for transient reasons (slow page hydration, YouTube A/B layouts), so a
+      // single bad run must never stop us from trying again.
+      if (saved[key]?.cues?.length) {
         transcriptCache.set(videoId, saved[key]);
         return saved[key];
       }
@@ -151,6 +176,11 @@
     }
 
     const transcript = await window.FocusFlow.captions.fetchTranscript(videoId);
+    if (!transcript?.cues?.length) {
+      log(`No transcript for ${videoId}; not caching so the next visit retries.`);
+      return transcript;
+    }
+
     transcriptCache.set(videoId, transcript);
     try {
       await storageSet('local', { [key]: transcript });
@@ -182,6 +212,43 @@
     return String(text || '').trim().split(/\s+/).filter(Boolean).length;
   }
 
+  // Bug 2: combine AI sections with timed offline checkpoints over the time
+  // ranges of any windows that failed, so a partial result still covers the
+  // whole video. Returns aligned checkpoint / question / title arrays; a null
+  // question means the overlay falls back to an offline question at that point.
+  function planFromSections(sections, failedWindows, duration, chunkMinutes) {
+    const entries = sections.map((section) => ({
+      time: Math.round(section.endSeconds),
+      question: section.question,
+      title: section.title || '',
+    }));
+
+    const step = Math.max(60, Math.round(chunkMinutes * 60));
+    for (const win of failedWindows || []) {
+      const start = Math.round(win.windowStart);
+      const end = Math.round(win.windowEnd);
+      for (let t = start + step; t < end; t += step) {
+        entries.push({ time: t, question: null, title: '' });
+      }
+    }
+
+    entries.sort((a, b) => a.time - b.time);
+
+    const checkpoints = [];
+    const aiQuestions = [];
+    const sectionTitles = [];
+    let last = -Infinity;
+    for (const entry of entries) {
+      if (entry.time <= 0 || entry.time >= duration - END_BUFFER_SECONDS) continue;
+      if (entry.time - last < 1) continue;
+      checkpoints.push(entry.time);
+      aiQuestions.push(entry.question);
+      sectionTitles.push(entry.title);
+      last = entry.time;
+    }
+    return { checkpoints, aiQuestions, sectionTitles };
+  }
+
   async function evictCache(prefix, max) {
     try {
       const all = await storageGet('local', null);
@@ -200,16 +267,16 @@
   }
 
   // Issue #1: ask the AI where the natural section breaks are. Returns
-  // { sections, reason, trace, cached }. `sections` is null on any failure so
-  // the caller can fall back to timed checkpoints.
-  async function loadAISections(videoId, title, transcript, video, settings) {
+  // { sections, reason, trace, cached, failedWindows, totalWindows }. `sections`
+  // is null on total failure so the caller can fall back to timed checkpoints.
+  async function loadAISections(videoId, title, transcript, video, settings, onRequestSent) {
     if (!aiEnabled(settings)) return { sections: null, reason: 'AI questions are turned off' };
 
     const cues = transcript.cues || [];
     const key = `sections:${videoId}`;
 
     if (sectionCache.has(videoId)) {
-      return { sections: sectionCache.get(videoId), reason: 'ok', cached: true };
+      return { sections: sectionCache.get(videoId), reason: 'ok', cached: true, failedWindows: [] };
     }
 
     try {
@@ -217,7 +284,7 @@
       const cached = window.FocusFlow.validate.sections(saved[key]?.sections);
       if (cached) {
         sectionCache.set(videoId, cached);
-        return { sections: cached, reason: 'ok', cached: true };
+        return { sections: cached, reason: 'ok', cached: true, failedWindows: [] };
       }
     } catch (error) {
       log('Could not read AI section cache:', error);
@@ -236,9 +303,16 @@
       cues,
       durationSeconds: video.duration,
       settings,
+      onRequestSent,
     });
     if (!result?.sections) {
-      return { sections: null, reason: describeAIError(result?.reason), trace: result?.trace };
+      return {
+        sections: null,
+        reason: describeAIError(result?.reason),
+        trace: result?.trace,
+        failedWindows: result?.failedWindows || [],
+        totalWindows: result?.totalWindows || 0,
+      };
     }
 
     // Re-validate the model output client-side before trusting it.
@@ -247,18 +321,29 @@
       return { sections: null, reason: 'AI returned unusable sections', trace: result?.trace };
     }
 
-    sectionCache.set(videoId, validated);
-    try {
-      await storageSet('local', { [key]: { createdAt: Date.now(), sections: validated } });
-      await evictCache('sections:', MAX_QUESTION_CACHE_VIDEOS);
-    } catch (error) {
-      log('Could not cache AI sections:', error);
+    // Only cache a complete result. A partial result (some windows failed) is
+    // left uncached so the failed windows are retried on the next visit.
+    if (!(result.failedWindows && result.failedWindows.length)) {
+      sectionCache.set(videoId, validated);
+      try {
+        await storageSet('local', { [key]: { createdAt: Date.now(), sections: validated } });
+        await evictCache('sections:', MAX_QUESTION_CACHE_VIDEOS);
+      } catch (error) {
+        log('Could not cache AI sections:', error);
+      }
     }
 
-    return { sections: validated, reason: 'ok', diagnostics: result.diagnostics, trace: result.trace };
+    return {
+      sections: validated,
+      reason: result.reason,
+      diagnostics: result.diagnostics,
+      trace: result.trace,
+      failedWindows: result.failedWindows || [],
+      totalWindows: result.totalWindows || 0,
+    };
   }
 
-  async function loadAIQuestions(videoId, title, chunks, transcript, settings) {
+  async function loadAIQuestions(videoId, title, chunks, transcript, settings, onRequestSent) {
     if (!aiEnabled(settings)) return { questions: null, reason: 'AI questions are turned off' };
 
     const key = `questions:${videoId}`;
@@ -285,7 +370,7 @@
       return { questions: null, reason: 'Captions are too short for AI questions' };
     }
 
-    const result = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks });
+    const result = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks, onRequestSent });
     if (!result?.questions) {
       return { questions: null, reason: describeAIError(result?.reason), trace: result?.trace };
     }
@@ -548,29 +633,44 @@
         wordCount(cues.map((cue) => cue.text).join(' ')) > MIN_AI_WORDS;
 
       if (canSegment) {
+        const endpoint = resolveEndpoint(settings.proxyUrl);
+        const onRequestSent = (info) => traceRequestSent(endpoint, info);
+        const heartbeat = startHeartbeat();
         const startedAt = Date.now();
-        const segResult = await loadAISections(videoId, state.title, transcript, video, settings);
+        let segResult;
+        try {
+          segResult = await loadAISections(videoId, state.title, transcript, video, settings, onRequestSent);
+        } finally {
+          clearInterval(heartbeat);
+        }
         if (token.cancelled) return;
         const roundTripMs = Date.now() - startedAt;
 
         if (segResult.sections) {
-          if (segResult.trace) {
-            traceRequestSteps(segResult.trace, segResult.sections.length, roundTripMs);
-          } else if (segResult.cached) {
+          if (segResult.cached) {
             trace(4, 'AI sections restored from cache (no API call)', {
               sections: segResult.sections.length,
             });
+          } else {
+            traceResponseSteps(segResult.trace, segResult.sections.length, roundTripMs);
+          }
+          if (segResult.failedWindows && segResult.failedWindows.length) {
+            traceWarn(
+              2,
+              `${segResult.failedWindows.length} of ${segResult.totalWindows} windows failed; covering those ranges with timed offline checkpoints`
+            );
           }
 
-          // Drop any section that ends within the end buffer so the last
-          // checkpoint never lands on the closing seconds of the video.
-          const usable = segResult.sections.filter(
-            (section) => Math.round(section.endSeconds) < video.duration - END_BUFFER_SECONDS
+          const plan = planFromSections(
+            segResult.sections,
+            segResult.failedWindows,
+            video.duration,
+            settings.chunkMinutes
           );
-          if (usable.length) {
-            checkpoints = usable.map((section) => Math.round(section.endSeconds));
-            aiQuestions = usable.map((section) => section.question);
-            sectionTitles = usable.map((section) => section.title || '');
+          if (plan.checkpoints.length) {
+            checkpoints = plan.checkpoints;
+            aiQuestions = plan.aiQuestions;
+            sectionTitles = plan.sectionTitles;
             usedSegmentation = true;
             aiReason = segResult.reason;
           } else {
@@ -578,7 +678,7 @@
           }
         } else {
           traceWarn(2, 'AI segmentation failed: ' + segResult.reason);
-          if (segResult.trace) traceRequestSteps(segResult.trace, 0, roundTripMs);
+          if (segResult.trace) traceResponseSteps(segResult.trace, 0, roundTripMs);
         }
       }
 
@@ -591,15 +691,23 @@
           return;
         }
         const chunks = buildChunks(cues, checkpoints);
+        const endpoint = resolveEndpoint(settings.proxyUrl);
+        const onRequestSent = (info) => traceRequestSent(endpoint, info);
+        const heartbeat = startHeartbeat();
         const startedAt = Date.now();
-        const aiResult = await loadAIQuestions(videoId, state.title, chunks, transcript, settings);
+        let aiResult;
+        try {
+          aiResult = await loadAIQuestions(videoId, state.title, chunks, transcript, settings, onRequestSent);
+        } finally {
+          clearInterval(heartbeat);
+        }
         if (token.cancelled) return;
         const roundTripMs = Date.now() - startedAt;
 
         aiQuestions = aiResult.questions;
         aiReason = aiResult.reason;
         if (aiResult.trace) {
-          traceRequestSteps(aiResult.trace, (aiQuestions || []).filter(Boolean).length, roundTripMs);
+          traceResponseSteps(aiResult.trace, (aiQuestions || []).filter(Boolean).length, roundTripMs);
         }
         if (!aiQuestions) traceWarn(2, 'AI questions unavailable: ' + aiResult.reason);
       }
@@ -619,8 +727,8 @@
       state.onTimeUpdate = listener.onTimeUpdate;
       state.triggerNow = listener.triggerNow;
 
-      const aiActive = Boolean(aiQuestions);
       const aiCount = (aiQuestions || []).filter(Boolean).length;
+      const aiActive = aiCount > 0;
       const offlineCount = checkpoints.length - aiCount;
 
       trace(5, 'Questions loaded', {

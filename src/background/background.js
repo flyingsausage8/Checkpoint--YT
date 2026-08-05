@@ -9,7 +9,7 @@
  * also what lets the backend's origin allowlist mean something.
  */
 const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 45000;
 
 function endpointFromBase(baseUrl) {
   const url = String(baseUrl || DEFAULT_PROXY_URL).trim().replace(/\/+$/, '');
