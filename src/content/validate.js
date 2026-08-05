@@ -61,5 +61,35 @@ window.FocusFlow.validate = (() => {
     return valid.length >= needed ? valid : null;
   }
 
-  return { questions };
+  // AI-chosen sections. Mirrors the backend contract: strictly increasing time
+  // ranges, each carrying one valid question. Used for fresh backend responses
+  // and to re-validate anything restored from the section cache.
+  function sections(raw) {
+    if (!Array.isArray(raw) || !raw.length) return null;
+    const valid = [];
+    let cursor = -Infinity;
+    for (const item of raw) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const startSeconds = Number(item.startSeconds);
+      const endSeconds = Number(item.endSeconds);
+      if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds)) continue;
+      if (endSeconds <= startSeconds || startSeconds < cursor) continue;
+      const question = normaliseItem(item.question);
+      if (!question) continue;
+      const title = cleanString(item.title || '').slice(0, 80);
+      if (containsDangerousString([title])) continue;
+      cursor = endSeconds;
+      valid.push({
+        startSeconds,
+        endSeconds,
+        title,
+        question: Number.isInteger(item.question.index)
+          ? { ...question, index: item.question.index }
+          : question,
+      });
+    }
+    return valid.length ? valid : null;
+  }
+
+  return { questions, sections };
 })();

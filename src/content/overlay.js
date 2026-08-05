@@ -36,6 +36,7 @@ window.FocusFlow.overlay = (() => {
       card.appendChild(
         el('div', 'ff-eyebrow', `Checkpoint ${meta.index} of ${meta.total}`)
       );
+      if (meta.sectionTitle) card.appendChild(el('div', 'ff-section-title', meta.sectionTitle));
       card.appendChild(el('h2', 'ff-prompt', question.prompt));
 
       const list = el('div', 'ff-choices');

@@ -9,34 +9,35 @@
  * also what lets the backend's origin allowlist mean something.
  */
 const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
-const TIMEOUT_MS = 20000;
+const TIMEOUT_MS = 30000;
 
 function endpointFromBase(baseUrl) {
   const url = String(baseUrl || DEFAULT_PROXY_URL).trim().replace(/\/+$/, '');
   return url.endsWith('/generate') ? url : `${url}/api/generate`;
 }
 
-async function requestQuestions({ videoId, title, chunks }) {
+async function postToBackend(payload) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
     const { proxyUrl } = await chrome.storage.sync.get({ proxyUrl: DEFAULT_PROXY_URL });
-    const response = await fetch(endpointFromBase(proxyUrl), {
+    const endpoint = endpointFromBase(proxyUrl);
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Extension-Id': chrome.runtime.id,
       },
-      body: JSON.stringify({ videoId, title, chunks }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      return { ok: false, error: `http_${response.status}` };
+      return { ok: false, error: `http_${response.status}`, endpoint };
     }
     const body = await response.json();
-    return { ok: true, questions: body.questions };
+    return { ok: true, body, endpoint };
   } catch (error) {
     return { ok: false, error: error?.name === 'AbortError' ? 'timeout' : 'network' };
   } finally {
@@ -44,11 +45,43 @@ async function requestQuestions({ videoId, title, chunks }) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== 'focusflow:generate-questions') return false;
+async function requestQuestions({ videoId, title, chunks }) {
+  const result = await postToBackend({ videoId, title, chunks });
+  if (!result.ok) return { ok: false, error: result.error, endpoint: result.endpoint };
+  return {
+    ok: true,
+    questions: result.body.questions,
+    diagnostics: result.body.diagnostics,
+    endpoint: result.endpoint,
+  };
+}
 
-  requestQuestions(message.payload || {})
-    .then(sendResponse)
-    .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
-  return true;
+// Issue #1: segment mode asks the backend where the natural topic breaks are.
+async function requestSegments(payload) {
+  const result = await postToBackend({ ...payload, mode: 'segment' });
+  if (!result.ok) return { ok: false, error: result.error, endpoint: result.endpoint };
+  return {
+    ok: true,
+    sections: result.body.sections,
+    diagnostics: result.body.diagnostics,
+    endpoint: result.endpoint,
+  };
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'focusflow:generate-questions') {
+    requestQuestions(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (message?.type === 'focusflow:segment-video') {
+    requestSegments(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  return false;
 });

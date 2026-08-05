@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   minVideoMinutes: 4,
   autoPause: true,
   useAI: true,
+  aiCheckpoints: true,
   proxyUrl: DEFAULT_PROXY_URL,
 };
 
@@ -18,6 +19,7 @@ const elements = {
   minVideoMinutes: document.querySelector('#minVideoMinutes'),
   autoPause: document.querySelector('#autoPause'),
   useAI: document.querySelector('#useAI'),
+  aiCheckpoints: document.querySelector('#aiCheckpoints'),
   proxyUrl: document.querySelector('#proxyUrl'),
   testCheckpoint: document.querySelector('#testCheckpoint'),
   viewTranscript: document.querySelector('#viewTranscript'),
@@ -54,6 +56,7 @@ function readForm() {
     minVideoMinutes: Math.max(0, Number(elements.minVideoMinutes.value) || 0),
     autoPause: elements.autoPause.checked,
     useAI: elements.useAI.checked,
+    aiCheckpoints: elements.aiCheckpoints.checked,
     proxyUrl: elements.proxyUrl.value.trim() || DEFAULT_PROXY_URL,
   };
 }
@@ -69,6 +72,7 @@ function render(settings) {
   );
   elements.autoPause.checked = settings.autoPause !== false;
   elements.useAI.checked = settings.useAI === true;
+  elements.aiCheckpoints.checked = settings.aiCheckpoints !== false;
   elements.proxyUrl.value = settings.proxyUrl || DEFAULT_PROXY_URL;
 }
 
@@ -245,6 +249,7 @@ for (const input of [
   elements.minVideoMinutes,
   elements.autoPause,
   elements.useAI,
+  elements.aiCheckpoints,
   elements.proxyUrl,
 ]) {
   input.addEventListener('change', save);

@@ -7,13 +7,16 @@
     minVideoMinutes: 4,
     autoPause: true,
     useAI: true,
+    aiCheckpoints: true,
     proxyUrl: DEFAULT_PROXY_URL,
   };
   const END_BUFFER_SECONDS = 30;
   const MIN_AI_WORDS = 100;
   const MAX_QUESTION_CACHE_VIDEOS = 50;
+  const TRACE_ENABLED = true;
   const transcriptCache = new Map();
   const questionCache = new Map();
+  const sectionCache = new Map();
 
   let state = null;
   let lastKnownVideoId = currentVideoId();
@@ -21,6 +24,39 @@
 
   const log = (...args) => console.warn('[FocusFlow]', ...args);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // Issue #5: trace the five setup steps in the page console the user is already
+  // watching, so the AI pipeline is visible without opening the worker console.
+  const trace = (step, message, data) => {
+    if (!TRACE_ENABLED) return;
+    console.log(
+      '%c[FocusFlow] STEP ' + step + '/5%c ' + message,
+      'background:#2d6cdf;color:white;padding:2px 6px;border-radius:3px',
+      '',
+      data ?? ''
+    );
+  };
+
+  const traceWarn = (step, message) =>
+    console.warn('[FocusFlow] STEP ' + step + '/5 FAILED - ' + message);
+
+  // Steps 2-4 read the diagnostics the background worker relayed from the
+  // backend, so the user never has to look in the service worker console.
+  function traceRequestSteps(info, returnedCount, roundTripMs) {
+    if (!info) return;
+    trace(2, 'API request sent to Azure', {
+      endpoint: info.endpoint,
+      mode: info.mode,
+      requests: info.requests,
+      charsSent: info.charsSent,
+    });
+    if (info.diagnostics && info.diagnostics.deployment) {
+      trace(3, 'Model received transcript and instructions', info.diagnostics);
+    } else {
+      traceWarn(3, 'backend returned no model diagnostics');
+    }
+    trace(4, 'Model returned questions', { returned: returnedCount, roundTripMs });
+  }
 
   function formatTime(seconds) {
     const total = Math.max(0, Math.floor(Number.isFinite(Number(seconds)) ? Number(seconds) : 0));
@@ -61,6 +97,7 @@
       ),
       autoPause: saved.autoPause !== false,
       useAI: saved.useAI !== false,
+      aiCheckpoints: saved.aiCheckpoints !== false,
       proxyUrl: typeof saved.proxyUrl === 'string' ? saved.proxyUrl.trim() : DEFAULT_PROXY_URL,
     };
   }
@@ -145,17 +182,80 @@
     return String(text || '').trim().split(/\s+/).filter(Boolean).length;
   }
 
-  async function evictQuestionCache() {
+  async function evictCache(prefix, max) {
     try {
       const all = await storageGet('local', null);
       const entries = Object.entries(all)
-        .filter(([key, value]) => key.startsWith('questions:') && value?.createdAt)
+        .filter(([key, value]) => key.startsWith(prefix) && value?.createdAt)
         .sort((a, b) => Number(b[1].createdAt) - Number(a[1].createdAt));
-      const stale = entries.slice(MAX_QUESTION_CACHE_VIDEOS).map(([key]) => key);
+      const stale = entries.slice(max).map(([key]) => key);
       if (stale.length) await storageRemove('local', stale);
     } catch (error) {
-      log('Could not evict old AI question cache:', error);
+      log('Could not evict old cache entries for', prefix, error);
     }
+  }
+
+  async function evictQuestionCache() {
+    return evictCache('questions:', MAX_QUESTION_CACHE_VIDEOS);
+  }
+
+  // Issue #1: ask the AI where the natural section breaks are. Returns
+  // { sections, reason, trace, cached }. `sections` is null on any failure so
+  // the caller can fall back to timed checkpoints.
+  async function loadAISections(videoId, title, transcript, video, settings) {
+    if (!aiEnabled(settings)) return { sections: null, reason: 'AI questions are turned off' };
+
+    const cues = transcript.cues || [];
+    const key = `sections:${videoId}`;
+
+    if (sectionCache.has(videoId)) {
+      return { sections: sectionCache.get(videoId), reason: 'ok', cached: true };
+    }
+
+    try {
+      const saved = await storageGet('local', key);
+      const cached = window.FocusFlow.validate.sections(saved[key]?.sections);
+      if (cached) {
+        sectionCache.set(videoId, cached);
+        return { sections: cached, reason: 'ok', cached: true };
+      }
+    } catch (error) {
+      log('Could not read AI section cache:', error);
+    }
+
+    if (transcript.source === 'none') {
+      return { sections: null, reason: 'This video has no captions to read' };
+    }
+    if (wordCount(cues.map((cue) => cue.text).join(' ')) <= MIN_AI_WORDS) {
+      return { sections: null, reason: 'Captions are too short for AI sections' };
+    }
+
+    const result = await window.FocusFlow.ai.segmentVideo({
+      videoId,
+      title,
+      cues,
+      durationSeconds: video.duration,
+      settings,
+    });
+    if (!result?.sections) {
+      return { sections: null, reason: describeAIError(result?.reason), trace: result?.trace };
+    }
+
+    // Re-validate the model output client-side before trusting it.
+    const validated = window.FocusFlow.validate.sections(result.sections);
+    if (!validated) {
+      return { sections: null, reason: 'AI returned unusable sections', trace: result?.trace };
+    }
+
+    sectionCache.set(videoId, validated);
+    try {
+      await storageSet('local', { [key]: { createdAt: Date.now(), sections: validated } });
+      await evictCache('sections:', MAX_QUESTION_CACHE_VIDEOS);
+    } catch (error) {
+      log('Could not cache AI sections:', error);
+    }
+
+    return { sections: validated, reason: 'ok', diagnostics: result.diagnostics, trace: result.trace };
   }
 
   async function loadAIQuestions(videoId, title, chunks, transcript, settings) {
@@ -187,7 +287,7 @@
 
     const result = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks });
     if (!result?.questions) {
-      return { questions: null, reason: describeAIError(result?.reason) };
+      return { questions: null, reason: describeAIError(result?.reason), trace: result?.trace };
     }
 
     questionCache.set(videoId, result.questions);
@@ -203,7 +303,7 @@
       result.reason === 'partial'
         ? `AI covered ${result.covered} of ${result.total} checkpoints`
         : 'ok';
-    return { questions: result.questions, reason };
+    return { questions: result.questions, reason, trace: result.trace };
   }
 
   // Cached questions carry their chunk index, so they can be restored into the
@@ -281,7 +381,7 @@
     state = null;
   }
 
-  function setupTimeListener(videoId, video, checkpoints, transcript, settings, token, aiQuestions) {
+  function setupTimeListener(videoId, video, checkpoints, transcript, settings, token, aiQuestions, sectionTitles) {
     const answered = new Set();
     let lastTime = video.currentTime || 0;
     let overlayOpen = false;
@@ -304,10 +404,9 @@
         const question =
           aiQuestions?.[index] ||
           offlineQuestion(videoId, cues, previousCheckpoint, checkpoint, video.duration);
-        const result = await window.FocusFlow.overlay.show(question, {
-          index: index + 1,
-          total: checkpoints.length,
-        });
+        const meta = { index: index + 1, total: checkpoints.length };
+        if (sectionTitles?.[index]) meta.sectionTitle = sectionTitles[index];
+        const result = await window.FocusFlow.overlay.show(question, meta);
         if (token.cancelled) return false;
 
         if (result === 'rewatch') {
@@ -397,40 +496,115 @@
       if (token.cancelled || !video) return;
       state.video = video;
 
-      const checkpoints = makeCheckpoints(video.duration, settings.chunkMinutes);
+      // Issue #1: fetch the transcript first so the AI can decide the section
+      // breaks before we fall back to a fixed timer.
       const transcript = await loadTranscript(videoId);
       if (token.cancelled) return;
-      state.checkpoints = checkpoints;
       state.transcript = transcript;
       state.title = pageTitle();
 
+      const cues = transcript.cues || [];
+      const transcriptChars = cues.reduce((sum, cue) => sum + String(cue.text || '').length, 0);
+      if (transcript.source === 'none') {
+        traceWarn(1, 'no captions available for this video');
+      } else {
+        trace(1, 'Transcript acquired', {
+          source: transcript.source,
+          cues: cues.length,
+          chars: transcriptChars,
+          durationSeconds: Math.round(video.duration),
+        });
+      }
+
       const baseStatus = {
-        ready: video.duration >= settings.minVideoMinutes * 60 && checkpoints.length > 0,
+        ready: false,
         videoId,
         title: state.title,
         durationSeconds: Math.round(video.duration),
         chunkMinutes: settings.chunkMinutes,
         minVideoMinutes: settings.minVideoMinutes,
-        checkpointCount: checkpoints.length,
+        checkpointCount: 0,
         captionsSource: transcript.source,
-        transcriptCueCount: transcript.cues?.length || 0,
+        transcriptCueCount: cues.length,
         questionSource: 'offline',
         aiActive: false,
       };
 
       if (video.duration < settings.minVideoMinutes * 60) {
-        await writeStatus({ ...baseStatus, ready: false, reason: 'Video is shorter than the minimum' });
-        return;
-      }
-      if (!checkpoints.length) {
-        await writeStatus({ ...baseStatus, ready: false, reason: 'No checkpoints fit before the end' });
+        await writeStatus({ ...baseStatus, reason: 'Video is shorter than the minimum' });
         return;
       }
 
-      const chunks = buildChunks(transcript.cues || [], checkpoints);
-      const aiResult = await loadAIQuestions(videoId, baseStatus.title, chunks, transcript, settings);
-      if (token.cancelled) return;
-      const aiQuestions = aiResult.questions;
+      let checkpoints = null;
+      let aiQuestions = null;
+      let sectionTitles = null;
+      let aiReason = '';
+      let usedSegmentation = false;
+
+      const canSegment =
+        aiEnabled(settings) &&
+        settings.aiCheckpoints &&
+        transcript.source !== 'none' &&
+        wordCount(cues.map((cue) => cue.text).join(' ')) > MIN_AI_WORDS;
+
+      if (canSegment) {
+        const startedAt = Date.now();
+        const segResult = await loadAISections(videoId, state.title, transcript, video, settings);
+        if (token.cancelled) return;
+        const roundTripMs = Date.now() - startedAt;
+
+        if (segResult.sections) {
+          if (segResult.trace) {
+            traceRequestSteps(segResult.trace, segResult.sections.length, roundTripMs);
+          } else if (segResult.cached) {
+            trace(4, 'AI sections restored from cache (no API call)', {
+              sections: segResult.sections.length,
+            });
+          }
+
+          // Drop any section that ends within the end buffer so the last
+          // checkpoint never lands on the closing seconds of the video.
+          const usable = segResult.sections.filter(
+            (section) => Math.round(section.endSeconds) < video.duration - END_BUFFER_SECONDS
+          );
+          if (usable.length) {
+            checkpoints = usable.map((section) => Math.round(section.endSeconds));
+            aiQuestions = usable.map((section) => section.question);
+            sectionTitles = usable.map((section) => section.title || '');
+            usedSegmentation = true;
+            aiReason = segResult.reason;
+          } else {
+            traceWarn(2, 'AI sections all fell inside the end buffer; using timed checkpoints');
+          }
+        } else {
+          traceWarn(2, 'AI segmentation failed: ' + segResult.reason);
+          if (segResult.trace) traceRequestSteps(segResult.trace, 0, roundTripMs);
+        }
+      }
+
+      // Fallback chain: timed checkpoints with per-chunk AI questions, then
+      // offline questions. This must keep working so a video never breaks.
+      if (!usedSegmentation) {
+        checkpoints = makeCheckpoints(video.duration, settings.chunkMinutes);
+        if (!checkpoints.length) {
+          await writeStatus({ ...baseStatus, reason: 'No checkpoints fit before the end' });
+          return;
+        }
+        const chunks = buildChunks(cues, checkpoints);
+        const startedAt = Date.now();
+        const aiResult = await loadAIQuestions(videoId, state.title, chunks, transcript, settings);
+        if (token.cancelled) return;
+        const roundTripMs = Date.now() - startedAt;
+
+        aiQuestions = aiResult.questions;
+        aiReason = aiResult.reason;
+        if (aiResult.trace) {
+          traceRequestSteps(aiResult.trace, (aiQuestions || []).filter(Boolean).length, roundTripMs);
+        }
+        if (!aiQuestions) traceWarn(2, 'AI questions unavailable: ' + aiResult.reason);
+      }
+
+      state.checkpoints = checkpoints;
 
       const listener = setupTimeListener(
         videoId,
@@ -439,22 +613,40 @@
         transcript,
         settings,
         token,
-        aiQuestions
+        aiQuestions,
+        sectionTitles
       );
       state.onTimeUpdate = listener.onTimeUpdate;
       state.triggerNow = listener.triggerNow;
 
       const aiActive = Boolean(aiQuestions);
-      const questionSource = aiActive
-        ? aiResult.reason === 'ok'
+      const aiCount = (aiQuestions || []).filter(Boolean).length;
+      const offlineCount = checkpoints.length - aiCount;
+
+      trace(5, 'Questions loaded', {
+        mode: usedSegmentation ? 'AI sections' : aiActive ? 'timed + AI questions' : 'offline',
+        checkpoints: checkpoints.length,
+        aiQuestions: aiCount,
+        offlineQuestions: offlineCount,
+        timestamps: checkpoints,
+      });
+
+      const questionSource = usedSegmentation
+        ? aiReason === 'ok'
+          ? 'AI sections ready'
+          : aiReason
+        : aiActive
+        ? aiReason === 'ok'
           ? 'AI questions ready'
-          : aiResult.reason
-        : `offline questions - ${aiResult.reason}`;
+          : aiReason
+        : `offline questions - ${aiReason}`;
       await writeStatus({
         ...baseStatus,
+        checkpointCount: checkpoints.length,
         questionSource: aiActive ? 'AI' : 'offline',
         aiActive,
-        aiReason: aiResult.reason,
+        aiReason,
+        segmentMode: usedSegmentation,
         ready: true,
       });
       window.FocusFlow.overlay.toast(`FocusFlow: ${checkpoints.length} checkpoints - ${questionSource}`);

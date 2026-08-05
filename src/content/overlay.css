@@ -40,6 +40,14 @@
   white-space: pre-wrap;
 }
 
+.ff-section-title {
+  margin: -4px 0 14px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #d4d4d8;
+}
+
 .ff-choices {
   display: flex;
   flex-direction: column;
