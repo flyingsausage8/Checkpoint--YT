@@ -20,7 +20,7 @@ This build is Phase 1 + Phase 2 only: chunking, pausing, captions, overlays, and
 6. Click **Test checkpoint now** to show the overlay immediately.
 7. Click **View transcript** to open the transcript page, or **Show position on video** to see your current section in a toast.
 
-Defaults are testing-friendly: checkpoints every 3 minutes, and videos shorter than 4 minutes are skipped. You can raise those later in the popup.
+Defaults are testing-friendly: checkpoints every 3 minutes, and videos shorter than 4 minutes are skipped. You can raise those later in the FocusFlow panel beside the video.
 
 After editing files, return to `chrome://extensions` and click the reload button on FocusFlow.
 
@@ -48,6 +48,15 @@ Open the FocusFlow popup while on a YouTube watch page. The **Current video stat
 - A live stream or Short.
 
 
+## Where each setting lives
+
+The two surfaces are split by what they apply to, not by how important they are.
+
+- The **toolbar popup** holds focus mode, your account, and the advanced setup fields. These apply to YouTube as a whole, so they have to be reachable from any page — you cannot ask someone to open a video to undo something that hid the home page.
+- The **in-page panel**, above the recommendations beside the video, holds everything about the video you are watching: on/off, section length, minimum video length, auto-pause, and the two AI switches, next to the live progress it affects.
+
+Both write to the same settings object, and each carries the other's keys through untouched when it saves. Signing in stores settings as one replaced object, so a surface that dropped the keys it has no controls for would silently wipe them.
+
 ## Transcript and playback position tools
 
 The popup has three testing buttons:
@@ -72,20 +81,20 @@ FocusFlow uses the Chrome `tabs` permission so the popup and transcript page can
 - `src/content/overlay.js` builds the checkpoint card shown over the video.
 - `src/content/overlay.css` styles the checkpoint card and toast.
 - `src/content/markers.js` draws your checkpoints as dots on YouTube's own progress bar.
-- `src/content/panel.js` and `src/content/panel.css` are the in-page panel at the top of the recommendations column: live progress plus every setting, including focus mode.
+- `src/content/panel.js` and `src/content/panel.css` are the in-page panel at the top of the recommendations column: live progress plus every setting about checkpoints and questions.
 - `src/content/focus.js` and `src/content/focus.css` are focus mode — hiding the distracting parts of YouTube.
 - `src/content/content.js` coordinates video detection, checkpoints, captions, storage status, transcript/progress messages, and popup test messages.
-- `src/popup/popup.html` is the settings, status, transcript, and playback-position popup.
-- `src/popup/popup.js` saves settings, shows status/progress, opens the transcript page, and sends **Test checkpoint now** messages.
+- `src/popup/popup.html` is focus mode, your account, status, transcript, and playback position.
+- `src/popup/popup.js` runs focus mode, shows status/progress, opens the transcript page, and sends **Test checkpoint now** messages.
 - `src/transcript/transcript.html` and `src/transcript/transcript.js` show the full transcript, search, copy/download, and timestamp seeking.
 - `src/shared/format.js` formats playback times for extension pages.
-- `src/shared/settings.js` is the one definition of a settings object and where it is stored, shared by the panel and focus mode.
+- `src/shared/settings.js` is the one definition of a settings object and where it is stored, shared by the popup, the panel and focus mode.
 - `icons/` contains the extension icons.
 - `backend/` contains the optional Azure Functions backend for later AI questions.
 
 ## Focus mode
 
-Focus mode hides the parts of YouTube that pull you away from the video you chose. It is on by default and is controlled from the FocusFlow panel beside any video.
+Focus mode hides the parts of YouTube that pull you away from the video you chose. It is on by default and is controlled from the toolbar popup, so it can be switched off from any page — including a home page whose feed it has just hidden.
 
 There are three levels:
 

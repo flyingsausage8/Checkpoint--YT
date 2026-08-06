@@ -1,34 +1,14 @@
 const { formatTime } = window.FocusFlowFormat;
-const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
+const S = window.FocusFlowSettings;
 
-const DEFAULT_SETTINGS = {
-  enabled: true,
-  chunkMinutes: 3,
-  minVideoMinutes: 4,
-  autoPause: true,
-  useAI: true,
-  aiCheckpoints: true,
-  proxyUrl: DEFAULT_PROXY_URL,
-  // Focus mode has no controls in the popup — it lives in the on-page panel,
-  // where you can see what it hides. It is listed here so the popup loads and
-  // writes it back untouched instead of dropping it.
-  focusMode: 'standard',
-  focusParts: 'homeFeed,related,comments,shorts',
-};
-
-// The last settings we loaded or saved, used so the popup preserves keys it has
-// no form controls for. See readForm().
-let lastLoaded = { ...DEFAULT_SETTINGS };
+// The whole settings object as we last read or wrote it. The popup only has
+// controls for some of it (focus mode and the advanced setup fields); the rest —
+// section length, auto-pause, the AI switches, all of which live in the on-page
+// panel now — is carried through untouched. Without that, saving here would wipe
+// them, because signing in stores settings as one replaced object.
+let settings = { ...S.DEFAULTS };
 
 const elements = {
-  enabled: document.querySelector('#enabled'),
-  chunkRange: document.querySelector('#chunkRange'),
-  chunkMinutes: document.querySelector('#chunkMinutes'),
-  chunkValue: document.querySelector('#chunkValue'),
-  minVideoMinutes: document.querySelector('#minVideoMinutes'),
-  autoPause: document.querySelector('#autoPause'),
-  useAI: document.querySelector('#useAI'),
-  aiCheckpoints: document.querySelector('#aiCheckpoints'),
   proxyUrl: document.querySelector('#proxyUrl'),
   testCheckpoint: document.querySelector('#testCheckpoint'),
   viewTranscript: document.querySelector('#viewTranscript'),
@@ -42,6 +22,13 @@ const elements = {
   videoStatus: document.querySelector('#videoStatus'),
   saveStatus: document.querySelector('#saveStatus'),
   googleClientId: document.querySelector('#googleClientId'),
+  // focus mode
+  focusOn: document.querySelector('#focusOn'),
+  focusComplete: document.querySelector('#focusComplete'),
+  focusCustom: document.querySelector('#focusCustom'),
+  focusLevels: document.querySelector('#focusLevels'),
+  focusPartsBox: document.querySelector('#focusParts'),
+  focusParts: {},
   // account area
   accountSignedOut: document.querySelector('#accountSignedOut'),
   accountSignedIn: document.querySelector('#accountSignedIn'),
@@ -62,48 +49,11 @@ let saveTimer = null;
 let testTimer = null;
 const progressTimer = setInterval(refreshProgress, 500);
 
-function clamp(value, min, max, fallback) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  return Math.min(max, Math.max(min, number));
-}
-
-function setEnabled(enabled) {
-  elements.enabled.setAttribute('aria-pressed', String(enabled));
-  elements.enabled.textContent = enabled ? 'On' : 'Off';
-}
-
-function readForm() {
-  return {
-    // Spread the settings we loaded first: when signed in, saving replaces the
-    // whole account settings object, so any key this form doesn't know about —
-    // focus mode, or anything a newer version adds — would otherwise be wiped
-    // the first time someone touched a slider in the popup.
-    ...lastLoaded,
-    enabled: elements.enabled.getAttribute('aria-pressed') === 'true',
-    chunkMinutes: clamp(elements.chunkMinutes.value, 1, 20, DEFAULT_SETTINGS.chunkMinutes),
-    minVideoMinutes: Math.max(0, Number(elements.minVideoMinutes.value) || 0),
-    autoPause: elements.autoPause.checked,
-    useAI: elements.useAI.checked,
-    aiCheckpoints: elements.aiCheckpoints.checked,
-    proxyUrl: elements.proxyUrl.value.trim() || DEFAULT_PROXY_URL,
-  };
-}
-
-function render(settings) {
-  lastLoaded = { ...lastLoaded, ...settings };
-  const chunkMinutes = clamp(settings.chunkMinutes, 1, 20, DEFAULT_SETTINGS.chunkMinutes);
-  setEnabled(settings.enabled !== false);
-  elements.chunkRange.value = String(chunkMinutes);
-  elements.chunkMinutes.value = String(chunkMinutes);
-  elements.chunkValue.textContent = String(chunkMinutes);
-  elements.minVideoMinutes.value = String(
-    Math.max(0, Number(settings.minVideoMinutes) || DEFAULT_SETTINGS.minVideoMinutes)
-  );
-  elements.autoPause.checked = settings.autoPause !== false;
-  elements.useAI.checked = settings.useAI === true;
-  elements.aiCheckpoints.checked = settings.aiCheckpoints !== false;
-  elements.proxyUrl.value = settings.proxyUrl || DEFAULT_PROXY_URL;
+function render(loaded) {
+  settings = { ...S.DEFAULTS, ...loaded };
+  completeBeforeCustom = S.normaliseMode(settings.focusMode) === 'complete';
+  elements.proxyUrl.value = settings.proxyUrl || S.DEFAULT_PROXY_URL;
+  renderFocus();
 }
 
 function showSaved() {
@@ -123,40 +73,147 @@ function showTestStatus(message) {
 }
 
 function save() {
-  const settings = readForm();
-  render(settings);
-  persistSettings(settings).then(showSaved);
+  S.persist(settings).then(showSaved);
 }
 
-// --- account-aware settings storage ---------------------------------------
-// Signed out, settings live in the original top-level sync keys. Signed in,
-// they live under `account:<sub>:settings` so two people on one device don't
-// share settings. `sub` is Google's stable id — we never key on email.
+// --- focus mode ------------------------------------------------------------
+// Three switches over one stored value. `focusMode` ('off' | 'standard' |
+// 'complete' | 'custom') is the single source of truth; the switches are three
+// views of it, which is why every path goes through applyFocusMode rather than
+// setting flags independently and hoping they agree.
+//
+// Nothing here touches the page directly. The content script (src/content/focus.js)
+// watches storage, so writing the setting is what updates every open YouTube tab.
 
-async function activeAccountSub() {
-  const { activeAccount } = await chrome.storage.local.get({ activeAccount: null });
-  return activeAccount;
+// Remembered only while the popup is open: turning customize off should give
+// back the complete-focus level you had, not silently reset to standard.
+let completeBeforeCustom = false;
+
+// The first render must not animate, or every popup opening would play a slide.
+let booting = true;
+
+function focusState() {
+  const mode = S.normaliseMode(settings.focusMode);
+  return { mode, on: mode !== 'off', complete: mode === 'complete', custom: mode === 'custom' };
 }
 
-async function loadSettings() {
-  const sub = await activeAccountSub();
-  if (sub) {
-    const key = `account:${sub}:settings`;
-    const stored = await chrome.storage.sync.get({ [key]: null });
-    // First sign-in has no saved settings, so start from the anonymous ones.
-    return stored[key] || (await chrome.storage.sync.get(DEFAULT_SETTINGS));
+function applyFocusMode(mode) {
+  settings.focusMode = mode;
+  renderFocus();
+  save();
+}
+
+function setSwitch(button, on, { disabled = false } = {}) {
+  button.setAttribute('aria-pressed', String(Boolean(on)));
+  button.textContent = on ? 'On' : 'Off';
+  button.disabled = disabled;
+  button.classList.toggle('switch-off', !on);
+}
+
+/**
+ * A slide container is `max-height: 0` when closed. The open height has to be a
+ * real number for the transition to run, and `max-height: none` cannot animate,
+ * so we measure the content and set it explicitly.
+ */
+function setSlide(container, open) {
+  const inner = container.firstElementChild;
+  container.classList.toggle('slide-open', open);
+  container.style.maxHeight = open ? `${inner.scrollHeight}px` : '0px';
+  // Once open, drop the fixed height so the section can still grow if its
+  // contents change; a stale pixel value would clip them.
+  if (open) {
+    setTimeout(() => {
+      if (container.classList.contains('slide-open')) container.style.maxHeight = 'none';
+    }, 260);
   }
-  return chrome.storage.sync.get(DEFAULT_SETTINGS);
 }
 
-async function persistSettings(settings) {
-  const sub = await activeAccountSub();
-  if (sub) {
-    await chrome.storage.sync.set({ [`account:${sub}:settings`]: settings });
-  } else {
-    await chrome.storage.sync.set(settings);
+function buildFocusParts() {
+  const box = elements.focusPartsBox.firstElementChild;
+  for (const part of S.FOCUS_PARTS) {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = `part-${part.id}`;
+    input.addEventListener('change', () => {
+      settings.focusParts = S.FOCUS_PARTS.filter((p) => elements.focusParts[p.id].checked)
+        .map((p) => p.id)
+        .join(',');
+      save();
+    });
+
+    const label = document.createElement('label');
+    label.htmlFor = input.id;
+    const text = document.createElement('span');
+    text.textContent = part.label;
+    label.append(input, text);
+
+    const row = document.createElement('div');
+    row.className = 'part-row';
+    row.appendChild(label);
+    if (part.hint) {
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      hint.textContent = part.hint;
+      row.appendChild(hint);
+    }
+    box.appendChild(row);
+    elements.focusParts[part.id] = input;
   }
 }
+
+function renderFocus() {
+  const state = focusState();
+  setSwitch(elements.focusOn, state.on);
+  // Complete focus is disabled rather than hidden while customizing: it explains
+  // where the per-part list came from, and hiding it would make the section jump
+  // about as you toggle.
+  setSwitch(elements.focusComplete, state.complete, { disabled: state.custom });
+  setSwitch(elements.focusCustom, state.custom);
+  elements.focusComplete.title = state.custom
+    ? 'Turn customize focus off to use complete focus.'
+    : '';
+
+  const chosen = new Set(S.hiddenParts(settings));
+  for (const part of S.FOCUS_PARTS) {
+    elements.focusParts[part.id].checked = chosen.has(part.id);
+  }
+
+  if (booting) document.body.classList.add('booting');
+  setSlide(elements.focusLevels, state.on);
+  setSlide(elements.focusPartsBox, state.custom);
+  if (booting) {
+    booting = false;
+    requestAnimationFrame(() => document.body.classList.remove('booting'));
+  }
+}
+
+buildFocusParts();
+
+elements.focusOn.addEventListener('click', () => {
+  if (elements.focusOn.disabled) return;
+  if (focusState().on) return applyFocusMode('off');
+  // Coming back on lands on whichever level was last in use.
+  applyFocusMode(completeBeforeCustom ? 'complete' : 'standard');
+});
+
+elements.focusComplete.addEventListener('click', () => {
+  if (elements.focusComplete.disabled) return;
+  const next = !focusState().complete;
+  completeBeforeCustom = next;
+  applyFocusMode(next ? 'complete' : 'standard');
+});
+
+elements.focusCustom.addEventListener('click', () => {
+  if (elements.focusCustom.disabled) return;
+  if (!focusState().custom) {
+    // Seed from whatever is hidden right now, so switching to customize never
+    // changes the page by itself — it just hands over the controls.
+    settings.focusParts = S.hiddenParts(settings).join(',');
+    completeBeforeCustom = focusState().complete;
+    return applyFocusMode('custom');
+  }
+  applyFocusMode(completeBeforeCustom ? 'complete' : 'standard');
+});
 
 function setStatusRows(rows) {
   elements.videoStatus.replaceChildren(
@@ -279,52 +336,42 @@ async function refreshProgress() {
   }
 }
 
-loadSettings().then(render);
+S.load().then(render);
 loadClientId();
 refreshAccount();
 refreshStatus();
 refreshProgress();
 
-elements.enabled.addEventListener('click', () => {
-  setEnabled(elements.enabled.getAttribute('aria-pressed') !== 'true');
-  save();
-});
-
 elements.testCheckpoint.addEventListener('click', testCheckpoint);
 elements.viewTranscript.addEventListener('click', openTranscript);
 elements.showPosition.addEventListener('click', showPositionOnVideo);
 
-elements.chunkRange.addEventListener('input', () => {
-  elements.chunkMinutes.value = elements.chunkRange.value;
-  elements.chunkValue.textContent = elements.chunkRange.value;
+elements.proxyUrl.addEventListener('change', () => {
+  settings.proxyUrl = elements.proxyUrl.value.trim() || S.DEFAULT_PROXY_URL;
+  elements.proxyUrl.value = settings.proxyUrl;
+  save();
 });
-elements.chunkRange.addEventListener('change', save);
-
-elements.chunkMinutes.addEventListener('input', () => {
-  const value = clamp(elements.chunkMinutes.value, 1, 20, DEFAULT_SETTINGS.chunkMinutes);
-  elements.chunkRange.value = String(value);
-  elements.chunkValue.textContent = String(value);
-});
-
-for (const input of [
-  elements.chunkMinutes,
-  elements.minVideoMinutes,
-  elements.autoPause,
-  elements.useAI,
-  elements.aiCheckpoints,
-  elements.proxyUrl,
-]) {
-  input.addEventListener('change', save);
-}
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes.lastStatus) renderStatus(changes.lastStatus.newValue);
+  // The panel owns the section and AI settings now. The popup still carries them
+  // through every save, so it has to notice when they change under it — writing
+  // back a stale copy would quietly undo whatever was just set beside the video.
+  if (areaName === 'sync') refreshSettings();
   // The service worker updates `sync:<sub>` as a push succeeds or fails; keep
   // the sync line honest when that happens while the popup is open.
   if (areaName === 'local' && Object.keys(changes).some((key) => /^sync:/.test(key))) {
     refreshSyncStatus();
   }
 });
+
+async function refreshSettings() {
+  const next = { ...S.DEFAULTS, ...(await S.load()) };
+  // Ignore the echo of our own write, so the focus section doesn't re-render
+  // (and re-measure its slides) every time a switch is clicked.
+  if (JSON.stringify(next) === JSON.stringify(settings)) return;
+  render(next);
+}
 
 // --- Google client ID (app-level, not per account) ------------------------
 
@@ -457,7 +504,7 @@ async function refreshSyncStatus() {
 async function afterAccountChange(state) {
   if (state.ok) renderAccount(state);
   showAccountError('');
-  render(await loadSettings());
+  render(await S.load());
 }
 
 elements.signInBtn.addEventListener('click', async () => {

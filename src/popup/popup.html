@@ -119,6 +119,103 @@
         border: 1px solid #3f3f46; border-radius: 8px; background: #27272a; color: #fafafa;
       }
       .danger { background: transparent; color: #f87171; border: 1px solid #7f1d1d; }
+
+      /* --- focus mode ------------------------------------------------------
+         Focus mode lives here rather than in the on-page panel because the
+         panel only exists on a watch page: someone looking at a hidden home
+         feed needs a way to switch it back on from anywhere. */
+
+      .focus { margin-top: 18px; padding-top: 14px; border-top: 1px solid #3f3f46; }
+
+      .section-title {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #a1a1aa;
+      }
+
+      .switch-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 4px 8px;
+        margin-bottom: 12px;
+      }
+
+      /* The page-wide `label` rule is a flex row with its own margins, which
+         would fight this grid; these labels are plain text in a grid cell. */
+      .switch-row .switch-label {
+        display: block;
+        margin: 0;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      /* The hint spans both columns rather than sitting beside the switch, so a
+         long explanation never squeezes the switches to different widths. */
+      .switch-hint { grid-column: 1 / -1; margin-top: 0; }
+
+      .switch {
+        min-width: 54px;
+        padding: 5px 13px;
+        border: 1px solid transparent;
+        background: #06b6d4;
+        color: #04212a;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .switch.switch-off {
+        border-color: #52525b;
+        background: transparent;
+        color: #fafafa;
+        font-weight: 500;
+      }
+
+      .switch:not(:disabled):hover { background: #22d3ee; }
+      .switch.switch-off:not(:disabled):hover { background: #27272a; }
+      .switch:disabled { opacity: 0.4; cursor: not-allowed; }
+
+      /* Opening the popup should show the current state, not replay the slide
+         animation every single time. */
+      body.booting .slide { transition: none; }
+
+      /* Sliding sections. max-height is set from JS out of the measured content
+         height, because `auto` and `none` cannot be transitioned. */
+      .slide {
+        max-height: 0;
+        overflow: hidden;
+        opacity: 0;
+        transition: max-height 0.25s ease, opacity 0.25s ease;
+      }
+
+      .slide.slide-open { opacity: 1; }
+
+      /* Indented so the part list clearly belongs to "Customize focus" instead
+         of reading as more top-level switches. */
+      .parts .slide-inner {
+        margin: 2px 0 12px;
+        padding: 10px 0 2px 12px;
+        border-left: 2px solid #06b6d4;
+      }
+
+      .part-row { margin-bottom: 10px; }
+
+      .part-row label {
+        justify-content: flex-start;
+        gap: 8px;
+        margin: 0;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .part-row .hint { margin-left: 26px; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .slide { transition: none; }
+      }
     </style>
   </head>
   <body>
@@ -177,43 +274,49 @@
       <div id="playState" class="muted"></div>
     </section>
 
-    <label>
-      <span>Extension</span>
-      <button id="enabled" class="toggle" type="button" aria-pressed="true">On</button>
-    </label>
+    <!--
+      Focus mode. Three switches over one stored value; the part checkboxes are
+      generated from src/shared/settings.js so the list only ever exists once.
+    -->
+    <section class="focus">
+      <h2 class="section-title">Focus mode</h2>
 
-    <label class="stack">
-      Chunk length: <strong><span id="chunkValue">3</span> min</strong>
-      <span class="row">
-        <input id="chunkRange" type="range" min="1" max="20" step="1">
-        <input id="chunkMinutes" type="number" min="1" max="20" step="1">
-      </span>
-    </label>
+      <div class="switch-row">
+        <label class="switch-label" for="focusOn">Hide distractions</label>
+        <button id="focusOn" class="switch" type="button"></button>
+        <div class="hint switch-hint">Off puts YouTube back exactly as it was.</div>
+      </div>
 
-    <label>
-      <span>Skip videos shorter than</span>
-      <input id="minVideoMinutes" type="number" min="0" step="1">
-    </label>
+      <div id="focusLevels" class="slide">
+        <div class="slide-inner">
+          <div class="switch-row">
+            <label class="switch-label" for="focusComplete">Complete focus</label>
+            <button id="focusComplete" class="switch" type="button"></button>
+            <div class="hint switch-hint">Hides everything in the list below, not just the usual few.</div>
+          </div>
 
-    <label>
-      <span>Auto-pause at checkpoints</span>
-      <input id="autoPause" type="checkbox">
-    </label>
+          <div class="switch-row">
+            <label class="switch-label" for="focusCustom">Customize focus</label>
+            <button id="focusCustom" class="switch" type="button"></button>
+            <div class="hint switch-hint">Pick exactly what disappears.</div>
+          </div>
+
+          <div id="focusParts" class="slide parts"><div class="slide-inner"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="hint" style="margin-top:14px;">
+      Section length, auto-pause and the AI question settings live in the FocusFlow
+      panel beside the video, above the recommendations.
+    </p>
 
     <details>
-      <summary>Later: Azure AI settings</summary>
-      <label>
-        <span>Use AI questions</span>
-        <input id="useAI" type="checkbox">
-      </label>
-      <label>
-        <span>Let AI choose section breaks</span>
-        <input id="aiCheckpoints" type="checkbox">
-      </label>
+      <summary>Advanced setup</summary>
       <label class="stack">
         Azure Function URL
         <input id="proxyUrl" type="text" placeholder="https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate">
-        <span class="hint">Dormant in this build unless Azure host permissions are re-enabled.</span>
+        <span class="hint">Only change this if you run your own backend.</span>
       </label>
       <label class="stack">
         Google client ID
@@ -229,6 +332,7 @@
 
     <div id="saveStatus" role="status" aria-live="polite"></div>
     <script src="../shared/format.js"></script>
+    <script src="../shared/settings.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

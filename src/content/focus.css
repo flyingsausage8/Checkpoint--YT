@@ -23,10 +23,10 @@ html.ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-feed-filter-chip-bar-r
 }
 
 html.ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-rich-grid-renderer::before {
-  /* This message is the only thing on screen that explains where the feed went,
-     because the FocusFlow panel only exists on watch pages. Without it, someone
-     who forgot they turned focus mode on would think YouTube was broken. */
-  content: 'Home feed hidden by FocusFlow — search for what you came for. To bring it back, open any video and switch off "Hide distractions" in the FocusFlow panel.';
+  /* This message is the only thing on screen that explains where the feed went.
+     Without it, someone who forgot they turned focus mode on would think
+     YouTube was broken. */
+  content: 'Home feed hidden by FocusFlow — search for what you came for. To bring it back, click the FocusFlow icon in your toolbar and switch off "Hide distractions".';
   display: block;
   max-width: 460px;
   margin: 0 auto;
@@ -67,6 +67,17 @@ html.ff-hide-shorts ytd-video-renderer:has(a[href^="/shorts"]),
 html.ff-hide-shorts ytd-compact-video-renderer:has(a[href^="/shorts"]),
 html.ff-hide-shorts ytd-guide-entry-renderer:has(a[href^="/shorts"]),
 html.ff-hide-shorts ytd-mini-guide-entry-renderer:has(a[href^="/shorts"]) {
+  display: none !important;
+}
+
+/* The Shorts entry in the full left drawer is the odd one out: its link carries
+   no href at all, because YouTube opens the Shorts player in JavaScript instead
+   of navigating. Every other primary entry (Home, Subscriptions, You) does have
+   one, so "the primary entry that isn't a real link" is what identifies it —
+   matching on the word "Shorts" would only work in English. If YouTube ever adds
+   a second scripted primary entry this would hide that too, which is a visible
+   but harmless and instantly reversible mistake. */
+html.ff-hide-shorts tp-yt-app-drawer#guide ytd-guide-entry-renderer[is-primary]:has(a#endpoint:not([href])) {
   display: none !important;
 }
 

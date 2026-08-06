@@ -98,170 +98,10 @@ window.FocusFlow.panel = (() => {
     return { wrap, input };
   }
 
-  /** A small on/off pill. Used for focus mode, where a checkbox reads too quietly. */
-  function switchButton(id, onChange) {
-    const button = el('button', 'ffp-switch');
-    button.type = 'button';
-    button.id = id;
-    button.addEventListener('click', () => {
-      if (button.disabled) return;
-      onChange(button.getAttribute('aria-pressed') !== 'true');
-    });
-    return button;
-  }
-
-  function setSwitch(button, on, { disabled = false } = {}) {
-    button.setAttribute('aria-pressed', String(Boolean(on)));
-    button.textContent = on ? 'On' : 'Off';
-    button.disabled = disabled;
-    button.classList.toggle('ffp-switch-off', !on);
-  }
-
-  function switchRow(labelText, button, hintText) {
-    const wrap = el('div', 'ffp-switch-row');
-    const label = el('label', 'ffp-switch-label', labelText);
-    label.htmlFor = button.id;
-    wrap.append(label, button);
-    if (hintText) {
-      const hint = el('div', 'ffp-hint ffp-switch-hint', hintText);
-      wrap.appendChild(hint);
-    }
-    return wrap;
-  }
-
-  // --- focus mode ---------------------------------------------------------
-  // Three switches over one stored value. `focusMode` is the single source of
-  // truth ('off' | 'standard' | 'complete' | 'custom'); the switches are just
-  // three views of it, which is why every path below goes through applyFocusMode
-  // rather than setting flags independently and hoping they agree.
-
-  // Remembered only for this page view: if someone turns customize on and then
-  // off again, they should get back the complete-focus setting they had, not a
-  // silent reset to standard.
-  let completeBeforeCustom = false;
-
-  function focusState() {
-    const mode = S.normaliseMode(settings.focusMode);
-    return { mode, on: mode !== 'off', complete: mode === 'complete', custom: mode === 'custom' };
-  }
-
-  function applyFocusMode(mode) {
-    settings.focusMode = mode;
-    renderFocus();
-    // Show the result immediately rather than after the debounced write comes
-    // back through the storage listener, so the page reacts as you click.
-    window.FocusFlow.focus?.apply(settings);
-    queueSave();
-  }
-
-  function buildFocus() {
-    const wrap = el('div', 'ffp-focus');
-    wrap.appendChild(el('div', 'ffp-section-title', 'Focus mode'));
-
-    const master = switchButton('ffp-focus-on', (next) => {
-      if (!next) return applyFocusMode('off');
-      // Coming back on lands on whichever level they were last using.
-      applyFocusMode(completeBeforeCustom ? 'complete' : 'standard');
-    });
-    wrap.appendChild(
-      switchRow('Hide distractions', master, 'Off puts YouTube back exactly as it was.')
-    );
-
-    // Everything below only makes sense while focus mode is on, so it slides
-    // away with it instead of sitting there greyed out.
-    const levels = el('div', 'ffp-slide');
-    const levelsInner = el('div', 'ffp-slide-inner');
-
-    const complete = switchButton('ffp-focus-complete', (next) => {
-      completeBeforeCustom = next;
-      applyFocusMode(next ? 'complete' : 'standard');
-    });
-    levelsInner.appendChild(
-      switchRow('Complete focus', complete, 'Hides everything in the list below, not just the usual few.')
-    );
-
-    const custom = switchButton('ffp-focus-custom', (next) => {
-      if (next) {
-        // Seed from whatever is hidden right now, so switching to customize
-        // never changes the page by itself — it just hands over the controls.
-        settings.focusParts = S.hiddenParts(settings).join(',');
-        completeBeforeCustom = focusState().complete;
-        return applyFocusMode('custom');
-      }
-      applyFocusMode(completeBeforeCustom ? 'complete' : 'standard');
-    });
-    levelsInner.appendChild(
-      switchRow('Customize focus', custom, 'Pick exactly what disappears.')
-    );
-
-    const parts = el('div', 'ffp-slide ffp-parts');
-    const partsInner = el('div', 'ffp-slide-inner');
-    const partInputs = {};
-    for (const part of S.FOCUS_PARTS) {
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.id = `ffp-part-${part.id}`;
-      input.addEventListener('change', () => {
-        const chosen = S.FOCUS_PARTS.filter((p) => partInputs[p.id].checked).map((p) => p.id);
-        settings.focusParts = chosen.join(',');
-        window.FocusFlow.focus?.apply(settings);
-        queueSave();
-      });
-      const label = el('label', 'ffp-check');
-      label.htmlFor = input.id;
-      label.append(input, el('span', null, part.label));
-      const row = el('div', 'ffp-row ffp-row-check');
-      row.appendChild(label);
-      if (part.hint) row.appendChild(el('div', 'ffp-hint', part.hint));
-      partsInner.appendChild(row);
-      partInputs[part.id] = input;
-    }
-    parts.appendChild(partsInner);
-    levelsInner.appendChild(parts);
-    levels.appendChild(levelsInner);
-    wrap.appendChild(levels);
-
-    return { wrap, master, complete, custom, levels, parts, partInputs };
-  }
-
-  /**
-   * A slide container is `max-height: 0` when closed. The open height has to be
-   * a real number for the transition to run, and `max-height: none` doesn't
-   * animate, so we measure the content and set it explicitly.
-   */
-  function setSlide(container, open) {
-    const inner = container.firstElementChild;
-    container.classList.toggle('ffp-slide-open', open);
-    container.style.maxHeight = open ? `${inner.scrollHeight}px` : '0px';
-    // Once open, drop the fixed height so the section can still grow if its
-    // contents change; a stale pixel value would clip them.
-    if (open) {
-      setTimeout(() => {
-        if (container.classList.contains('ffp-slide-open')) container.style.maxHeight = 'none';
-      }, 260);
-    }
-  }
-
-  function renderFocus() {
-    const state = focusState();
-    setSwitch(els.focusMaster, state.on);
-    // Complete focus is disabled, not hidden, while customizing: it explains
-    // where the per-part list came from, and hiding it would make the section
-    // jump about as you toggle.
-    setSwitch(els.focusComplete, state.complete, { disabled: state.custom });
-    setSwitch(els.focusCustom, state.custom);
-    els.focusComplete.title = state.custom
-      ? 'Turn customize focus off to use complete focus.'
-      : '';
-
-    const chosen = new Set(S.hiddenParts(settings));
-    for (const part of S.FOCUS_PARTS) {
-      els.focusParts[part.id].checked = chosen.has(part.id);
-    }
-
-    setSlide(els.focusLevels, state.on);
-    setSlide(els.focusPartsBox, state.custom);
-  }
+  // Focus mode used to live here. It moved to the toolbar popup, because the
+  // panel only exists on a watch page and someone staring at a wall of
+  // recommendations on the home page had no way to switch the hiding off. The
+  // panel keeps everything about this video's checkpoints and questions.
 
   function build() {
     root = el('div', 'ffp-panel');
@@ -349,10 +189,8 @@ window.FocusFlow.panel = (() => {
 
     settingsWrap.append(chunkRow, minRow, pause.wrap, useAI.wrap, aiCheckpoints.wrap);
 
-    const focus = buildFocus();
-
     const saveNote = el('div', 'ffp-save', '');
-    body.append(summary, ask, settingsWrap, focus.wrap, saveNote);
+    body.append(summary, ask, settingsWrap, saveNote);
     root.append(head, body);
 
     els = {
@@ -370,12 +208,6 @@ window.FocusFlow.panel = (() => {
       pause: pause.input,
       useAI: useAI.input,
       aiCheckpoints: aiCheckpoints.input,
-      focusMaster: focus.master,
-      focusComplete: focus.complete,
-      focusCustom: focus.custom,
-      focusLevels: focus.levels,
-      focusPartsBox: focus.parts,
-      focusParts: focus.partInputs,
       saveNote,
     };
 
@@ -452,9 +284,6 @@ window.FocusFlow.panel = (() => {
     if (!parent || !root) return false;
     if (root.parentElement === parent && parent.firstElementChild === root) return true;
     parent.insertBefore(root, parent.firstElementChild);
-    // The sliding sections size themselves from the live layout, so they can
-    // only be measured once the panel is actually in the page.
-    renderFocus();
     return true;
   }
 
@@ -486,7 +315,6 @@ window.FocusFlow.panel = (() => {
     }
 
     settings = { ...DEFAULT_SETTINGS, ...(await loadSettings()) };
-    completeBeforeCustom = S.normaliseMode(settings.focusMode) === 'complete';
     const { panelCollapsed } = await chrome.storage.local.get({ panelCollapsed: false });
     collapsed = Boolean(panelCollapsed);
 
@@ -520,7 +348,6 @@ window.FocusFlow.panel = (() => {
     els.useAI.checked = settings.useAI !== false;
     els.aiCheckpoints.checked = settings.aiCheckpoints !== false;
     renderPower();
-    renderFocus();
   }
 
   function destroy() {
