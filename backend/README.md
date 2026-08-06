@@ -75,6 +75,46 @@ This backend is the optional Phase 3 AI proxy for FocusFlow. The extension sends
 13. Update `ALLOWED_ORIGINS` with that ID and redeploy app settings if needed.
 14. Paste the Function URL into the FocusFlow popup when you later enable AI.
 
+## Redeploying after a code change
+
+This app runs on the **Flex Consumption** SKU, which changes how it must be deployed. Use Azure Functions Core Tools, from the `backend` folder:
+
+```powershell
+func azure functionapp publish func-checkpoint-yt-pb5kh8 --build remote
+```
+
+`--build remote` matters: it makes Azure run `npm install`. There is no `node_modules` in this repo, and on some networks `registry.npmjs.org` is firewalled, so building locally is not always possible.
+
+If `func` is not installed and npm is blocked, download the standalone build from GitHub releases (github.com is usually reachable when the npm registry is not):
+
+```powershell
+$rel = Invoke-RestMethod https://api.github.com/repos/Azure/azure-functions-core-tools/releases/latest -Headers @{'User-Agent'='x'}
+$asset = $rel.assets | Where-Object { $_.name -match 'win-x64.*\.zip$' -and $_.name -notmatch 'symbols|sha' } | Select-Object -First 1
+Invoke-WebRequest $asset.browser_download_url -OutFile "$env:TEMP\func-cli.zip"
+Expand-Archive "$env:TEMP\func-cli.zip" -DestinationPath C:\src\yihan\func-cli -Force
+```
+
+### Ways of deploying that do not work here, and why
+
+These all look reasonable and all fail on Flex Consumption. They are listed because one of them took the backend down.
+
+| Command | What happens |
+| --- | --- |
+| `az functionapp deployment source config-zip --build-remote true` | Fails. `--build-remote` makes the CLI set `SCM_DO_BUILD_DURING_DEPLOYMENT` and `ENABLE_ORYX_BUILD`, and Flex Consumption rejects both. |
+| `az webapp deploy --type zip` | Fails with HTTP 415; it does not send what the Flex publish endpoint expects. |
+| `POST /api/publish?RemoteBuild=true` by hand | Rejected with the same app-settings complaint, even once those settings have been removed. |
+| `POST /api/publish?RemoteBuild=false` by hand | **Succeeds and breaks the app.** It deploys exactly what is in the zip, so with no `node_modules` nothing can load, no functions register, and every endpoint returns 404. |
+
+That last one is the dangerous one, because it reports success. If it happens, the fix is to publish again properly with Core Tools and `--build remote`; there is nothing to roll back to, because Flex keeps only the current package (`released-package.zip` in the deployment blob container) and has no persistent `/home/site` to recover a previous build from.
+
+Check the app is healthy after any deploy:
+
+```powershell
+Invoke-RestMethod https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/health
+```
+
+`{"ok":true,...}` means the host loaded. A 404 means the deployment produced an app with no working functions.
+
 ## Cost warning
 
 Set a budget alert or spending cap in Azure Cost Management before enabling AI. Code can reduce abuse, but Azure billing controls are the final protection against surprise costs.
