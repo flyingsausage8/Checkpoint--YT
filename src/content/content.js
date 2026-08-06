@@ -537,23 +537,45 @@
         `${longChapters.length} longer than ${bounds.max}s and due to be split`
     );
 
-    for (const chapter of kept) {
+    // Minutes are not the only way a chapter can be too big. A fast talker, or a
+    // viewer who set the maximum to half an hour, produces a chapter whose
+    // transcript alone would blow the per-request character budget, so the
+    // character count gets a say as well.
+    const needsSplit = (chapter) => {
       const span = chapter.endSeconds - chapter.startSeconds;
       const text = window.FocusFlow.captions.textBetween(cues, chapter.startSeconds, chapter.endSeconds);
-      // Minutes are not the only way a chapter can be too big. A fast talker, or
-      // a viewer who set the maximum to half an hour, produces a chapter whose
-      // transcript alone would blow the per-request character budget, so the
-      // character count gets a say as well.
-      if (span > bounds.max || text.length > MAX_CHAPTER_CHARS) {
-        const result = await window.FocusFlow.ai.segmentVideo({
-          videoId,
-          title,
-          cues,
-          durationSeconds,
-          settings,
-          range: { start: chapter.startSeconds, end: chapter.endSeconds },
-          onRequestSent,
-        });
+      return span > bounds.max || text.length > MAX_CHAPTER_CHARS;
+    };
+
+    // Each chapter split is an independent segmentVideo round trip, so waiting
+    // for one to finish before starting the next wastes wall-clock time. Run the
+    // splits concurrently (a few at a time), then assemble `sections` in the
+    // original chapter order below so it stays sorted by time — the caller builds
+    // checkpoints from it in order.
+    const toSplit = kept.filter(needsSplit);
+    const splitResults = new Map();
+    const SPLIT_CONCURRENCY = 4;
+    for (let i = 0; i < toSplit.length; i += SPLIT_CONCURRENCY) {
+      const group = toSplit.slice(i, i + SPLIT_CONCURRENCY);
+      const groupResults = await Promise.all(
+        group.map((chapter) =>
+          window.FocusFlow.ai.segmentVideo({
+            videoId,
+            title,
+            cues,
+            durationSeconds,
+            settings,
+            range: { start: chapter.startSeconds, end: chapter.endSeconds },
+            onRequestSent,
+          })
+        )
+      );
+      group.forEach((chapter, j) => splitResults.set(chapter, groupResults[j]));
+    }
+
+    for (const chapter of kept) {
+      if (splitResults.has(chapter)) {
+        const result = splitResults.get(chapter);
         const validated = result?.sections ? window.FocusFlow.validate.sections(result.sections) : null;
         if (validated && validated.length) {
           validated.forEach((section) => {
@@ -1339,23 +1361,6 @@
       const progress = progressSnapshot();
       if (!progress) notReady(sendResponse);
       else sendResponse(progress);
-      return false;
-    }
-
-    if (message?.type === 'focusflow:show-position') {
-      const progress = progressSnapshot();
-      if (!progress) {
-        notReady(sendResponse);
-        return false;
-      }
-      const next =
-        progress.secondsUntilNextCheckpoint === null
-          ? 'no more checkpoints'
-          : `next checkpoint in ${formatTime(progress.secondsUntilNextCheckpoint)}`;
-      window.FocusFlow.overlay.toast(
-        `${formatTime(progress.currentSeconds)} / ${formatTime(progress.durationSeconds)} · section ${progress.chunkIndex} of ${progress.chunkTotal} · ${next}`
-      );
-      sendResponse({ ok: true });
       return false;
     }
 

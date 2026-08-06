@@ -20,6 +20,11 @@ window.FocusFlow.panel = (() => {
   const RECHECK_MS = 1000;
   const SAVE_DEBOUNCE_MS = 400;
 
+  // Mirrors END_BUFFER_SECONDS in content.js: makeCheckpoints() stops placing
+  // checkpoints this many seconds before the end so the last question never
+  // lands on the outro. Kept in step so the panel's estimate matches the plan.
+  const END_BUFFER_SECONDS = 30;
+
   let root = null;
   let els = {};
   let settings = { ...DEFAULT_SETTINGS };
@@ -69,6 +74,33 @@ window.FocusFlow.panel = (() => {
     if (className) node.className = className;
     if (text != null) node.textContent = text;
     return node;
+  }
+
+  function groupTitle(text) {
+    return el('div', 'ffp-group-title', text);
+  }
+
+  // How many checkpoints the current spacing implies for a video of this length.
+  // This is the same evenly-spaced count content.js's makeCheckpoints() produces,
+  // so it is exact when AI is off and a close "about" figure when AI is on (where
+  // chapters and skipped sponsor/intro sections nudge it up or down). Returns null
+  // when we do not yet know the video length.
+  function estimatedCheckpoints() {
+    const duration = window.FocusFlow.session?.progress?.()?.durationSeconds;
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+    const target = S.sectionBounds(settings).target;
+    if (!Number.isFinite(target) || target <= 0) return null;
+    return Math.max(0, Math.floor((duration - END_BUFFER_SECONDS - 1e-6) / target));
+  }
+
+  function renderCheckpointEstimate() {
+    if (!els.checkpointEstimate) return;
+    const count = estimatedCheckpoints();
+    if (count === null) {
+      els.checkpointEstimate.textContent = 'Checkpoint count appears once the video length is known.';
+    } else {
+      els.checkpointEstimate.textContent = `About ${count} checkpoint${count === 1 ? '' : 's'} for this video.`;
+    }
   }
 
   function row(labelText, control, hintText) {
@@ -161,6 +193,7 @@ window.FocusFlow.panel = (() => {
       settings.chunkMinutes = Number(chunk.value);
       chunkValue.textContent = `${settings.chunkMinutes} min`;
       renderBounds();
+      renderCheckpointEstimate();
       queueSave();
     });
     const chunkRow = row(
@@ -169,6 +202,11 @@ window.FocusFlow.panel = (() => {
       'The length AI aims for, and the exact spacing when AI is off.'
     );
     chunkRow.querySelector('.ffp-label').appendChild(chunkValue);
+    // The consequence of the slider above, shown live: rather than a second
+    // control that could contradict the spacing, this reads out how many
+    // checkpoints the current spacing implies for the video open right now.
+    const checkpointEstimate = el('div', 'ffp-hint ffp-estimate', '');
+    chunkRow.appendChild(checkpointEstimate);
 
     // Fine-tune: the target above is what the AI aims for, but a topic rarely
     // ends exactly on time, so these two give it room to move either way.
@@ -238,11 +276,20 @@ window.FocusFlow.panel = (() => {
       'aiCheckpoints'
     );
 
-    settingsWrap.append(chunkRow, fine, minRow, pause.wrap, useAI.wrap, aiCheckpoints.wrap);
+    settingsWrap.append(
+      groupTitle('Timing'),
+      chunkRow,
+      fine,
+      minRow,
+      groupTitle('Questions'),
+      useAI.wrap,
+      aiCheckpoints.wrap,
+      pause.wrap
+    );
     renderBounds();
 
     const saveNote = el('div', 'ffp-save', '');
-    body.append(summary, ask, settingsWrap, saveNote);
+    body.append(groupTitle('This video'), summary, ask, settingsWrap, saveNote);
     root.append(head, body);
 
     els = {
@@ -256,6 +303,7 @@ window.FocusFlow.panel = (() => {
       ask,
       chunk,
       chunkValue,
+      checkpointEstimate,
       minLen,
       pause: pause.input,
       useAI: useAI.input,
@@ -266,6 +314,7 @@ window.FocusFlow.panel = (() => {
 
     renderPower();
     setCollapsed(collapsed, { save: false });
+    renderCheckpointEstimate();
     return root;
   }
 
@@ -304,6 +353,7 @@ window.FocusFlow.panel = (() => {
   }
 
   function renderProgress() {
+    renderCheckpointEstimate();
     const progress = window.FocusFlow.session?.progress?.();
     if (!progress?.ok || !progress.durationSeconds) {
       els.progressLine.textContent = '';
@@ -401,6 +451,7 @@ window.FocusFlow.panel = (() => {
     els.useAI.checked = settings.useAI !== false;
     els.aiCheckpoints.checked = settings.aiCheckpoints !== false;
     els.renderBounds();
+    renderCheckpointEstimate();
     renderPower();
   }
 

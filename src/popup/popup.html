@@ -263,7 +263,6 @@
 
     <button id="testCheckpoint" class="primary" type="button">Test checkpoint now</button>
     <button id="viewTranscript" class="secondary" type="button">View transcript</button>
-    <button id="showPosition" class="secondary" type="button">Show position on video</button>
     <div id="testStatus" role="status" aria-live="polite"></div>
 
     <section class="status-card" aria-live="polite">
@@ -313,11 +312,14 @@
 
     <details>
       <summary>Advanced setup</summary>
-      <label class="stack">
-        Azure Function URL
-        <input id="proxyUrl" type="text" placeholder="https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate">
-        <span class="hint">Only change this if you run your own backend.</span>
-      </label>
+      <!--
+        The Azure Function URL (proxyUrl) input was deliberately removed from this
+        UI. It is the backend the extension calls to reach the AI, and a working
+        default lives in src/shared/settings.js (DEFAULT_PROXY_URL). Exposing it as
+        an editable field only invited people to paste a broken value and silently
+        disable AI, so the setting still exists and syncs — it just is not editable
+        here. Change it in code if you run your own backend.
+      -->
       <label class="stack">
         Google client ID
         <input id="googleClientId" type="text" placeholder="Leave blank to use FocusFlow's own">

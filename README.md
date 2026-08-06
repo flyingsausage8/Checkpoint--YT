@@ -18,7 +18,7 @@ This build is Phase 1 + Phase 2 only: chunking, pausing, captions, overlays, and
 4. Open any normal YouTube video longer than 4 minutes.
 5. Click the FocusFlow extension icon.
 6. Click **Test checkpoint now** to show the overlay immediately.
-7. Click **View transcript** to open the transcript page, or **Show position on video** to see your current section in a toast.
+7. Click **View transcript** to open the transcript page.
 
 Defaults are testing-friendly: checkpoints every 3 minutes, and videos shorter than 4 minutes are skipped. You can raise those later in the FocusFlow panel beside the video.
 
@@ -84,17 +84,16 @@ They are clamped so they cannot cross, and the panel prints the result as a sent
 The two surfaces are split by what they apply to, not by how important they are.
 
 - The **toolbar popup** holds focus mode, your account, and the advanced setup fields. These apply to YouTube as a whole, so they have to be reachable from any page — you cannot ask someone to open a video to undo something that hid the home page.
-- The **in-page panel**, above the recommendations beside the video, holds everything about the video you are watching: on/off, section length, minimum video length, auto-pause, and the two AI switches, next to the live progress it affects.
+- The **in-page panel**, above the recommendations beside the video, holds everything about the video you are watching: on/off, section length (grouped under **Timing**), minimum video length, and — under **Questions** — auto-pause and the two AI switches, next to the live progress it affects. The Timing group also reads out roughly how many checkpoints the current spacing implies for the video open right now.
 
 Both write to the same settings object, and each carries the other's keys through untouched when it saves. Signing in stores settings as one replaced object, so a surface that dropped the keys it has no controls for would silently wipe them.
 
 ## Transcript and playback position tools
 
-The popup has three testing buttons:
+The popup has two testing buttons:
 
 - **Test checkpoint now** opens the checkpoint overlay immediately.
 - **View transcript** opens a full-page transcript viewer. Timestamp buttons jump the YouTube tab to that moment, the search box filters text, and checkpoint dividers show which transcript section feeds each question.
-- **Show position on video** displays the current time, section, and next checkpoint directly over the video, useful in fullscreen.
 
 The popup also includes a live **Where you are** readout with current time, percent, play/pause state, and checkpoint tick marks.
 
@@ -115,7 +114,7 @@ FocusFlow uses the Chrome `tabs` permission so the popup and transcript page can
 - `src/content/panel.js` and `src/content/panel.css` are the in-page panel at the top of the recommendations column: live progress plus every setting about checkpoints and questions.
 - `src/content/focus.js` and `src/content/focus.css` are focus mode — hiding the distracting parts of YouTube.
 - `src/content/content.js` coordinates video detection, checkpoints, captions, storage status, transcript/progress messages, and popup test messages.
-- `src/popup/popup.html` is focus mode, your account, status, transcript, and playback position.
+- `src/popup/popup.html` is focus mode, your account, status, and the transcript button.
 - `src/popup/popup.js` runs focus mode, shows status/progress, opens the transcript page, and sends **Test checkpoint now** messages.
 - `src/transcript/transcript.html` and `src/transcript/transcript.js` show the full transcript, search, copy/download, and timestamp seeking.
 - `src/shared/format.js` formats playback times for extension pages.
@@ -177,7 +176,7 @@ The backend keeps these defences in one place:
 - Azure OpenAI secrets loaded only from Function App settings.
 - GPT-5-compatible request settings: `max_completion_tokens`, no temperature/sampling parameters, and JSON response format.
 
-Before enabling AI, add `https://*.azurewebsites.net/*` to `manifest.json` host permissions, deploy the Azure Function, set the Azure OpenAI app settings, allowlist your extension id, and paste `https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate` into the popup. The current Azure OpenAI resource is `aoai-checkpoint-yt-pb5kh8`, endpoint `https://aoai-checkpoint-yt-pb5kh8.openai.azure.com/`, deployment `questions`, model `gpt-5-mini` version `2025-08-07`. See `backend/README.md` for the full guide.
+Before enabling AI, add `https://*.azurewebsites.net/*` to `manifest.json` host permissions, deploy the Azure Function, set the Azure OpenAI app settings, and allowlist your extension id. The backend URL is no longer an editable popup field — it defaults to `https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate` as `DEFAULT_PROXY_URL` in `src/shared/settings.js`, so change it there if you run your own backend. The current Azure OpenAI resource is `aoai-checkpoint-yt-pb5kh8`, endpoint `https://aoai-checkpoint-yt-pb5kh8.openai.azure.com/`, deployment `questions`, model `gpt-5-mini` version `2025-08-07`. See `backend/README.md` for the full guide.
 
 Set a budget alert or spending cap in Azure Cost Management before enabling AI. Code-level rate limits help, but a billing cap is the final protection against surprise costs.
 

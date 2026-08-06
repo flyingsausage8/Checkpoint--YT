@@ -9,10 +9,8 @@ const S = window.FocusFlowSettings;
 let settings = { ...S.DEFAULTS };
 
 const elements = {
-  proxyUrl: document.querySelector('#proxyUrl'),
   testCheckpoint: document.querySelector('#testCheckpoint'),
   viewTranscript: document.querySelector('#viewTranscript'),
-  showPosition: document.querySelector('#showPosition'),
   testStatus: document.querySelector('#testStatus'),
   progressReadout: document.querySelector('#progressReadout'),
   progressTrack: document.querySelector('#progressTrack'),
@@ -52,7 +50,6 @@ const progressTimer = setInterval(refreshProgress, 500);
 function render(loaded) {
   settings = { ...S.DEFAULTS, ...loaded };
   completeBeforeCustom = S.normaliseMode(settings.focusMode) === 'complete';
-  elements.proxyUrl.value = settings.proxyUrl || S.DEFAULT_PROXY_URL;
   renderFocus();
 }
 
@@ -288,15 +285,6 @@ async function openTranscript() {
   }
 }
 
-async function showPositionOnVideo() {
-  try {
-    const response = await messageActiveYouTube({ type: 'focusflow:show-position' });
-    showTestStatus(response?.ok ? 'Position shown on video.' : 'FocusFlow is not ready yet.');
-  } catch (_) {
-    showTestStatus('Open or reload a YouTube watch page first.');
-  }
-}
-
 function renderNotReadyProgress() {
   elements.progressReadout.textContent = '--:-- / --:--';
   elements.progressFill.style.width = '0%';
@@ -344,13 +332,6 @@ refreshProgress();
 
 elements.testCheckpoint.addEventListener('click', testCheckpoint);
 elements.viewTranscript.addEventListener('click', openTranscript);
-elements.showPosition.addEventListener('click', showPositionOnVideo);
-
-elements.proxyUrl.addEventListener('change', () => {
-  settings.proxyUrl = elements.proxyUrl.value.trim() || S.DEFAULT_PROXY_URL;
-  elements.proxyUrl.value = settings.proxyUrl;
-  save();
-});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes.lastStatus) renderStatus(changes.lastStatus.newValue);

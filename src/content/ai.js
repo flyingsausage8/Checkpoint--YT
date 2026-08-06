@@ -5,10 +5,12 @@ window.FocusFlow.ai = (() => {
   const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
 
   // The backend caps each request at 24 chunks and 50k transcript characters.
-  // We stay under both by splitting long videos into several requests, so the
-  // chunk length setting can never silently disable AI questions.
-  const MAX_CHUNKS_PER_REQUEST = 12;
-  const MAX_CHARS_PER_REQUEST = 40000;
+  // We stay well under both, but the binding reason for these limits is speed:
+  // wall-clock time is dominated by the length of a single generation, so many
+  // small requests running in parallel finish sooner than a few large ones (an
+  // 18k-char request took ~28s of model time). Keep these small.
+  const MAX_CHUNKS_PER_REQUEST = 6;
+  const MAX_CHARS_PER_REQUEST = 12000;
 
   // Segment mode limits. Small windows keep each request fast (a single large
   // window took ~22s of model time); we then run windows in parallel and stitch
@@ -81,51 +83,66 @@ window.FocusFlow.ai = (() => {
     return map[code] ? `${map[code]} (${code})` : String(code || 'unknown error');
   }
 
+  // Every outbound AI request funnels through this gate. The per-call-site
+  // `mapLimit` limits in `segmentVideo` and `generateForVideo` only shape how a
+  // single call batches its own work; they are blind to each other. When several
+  // call sites run at once — planChapterSections splits up to 4 chapters
+  // concurrently, and each of those runs segmentVideo with its own mapLimit of 4
+  // windows — the naive ceiling multiplies to 4 x 4 = 16 simultaneous requests,
+  // which overloads the backend and produces timeouts that retries only worsen.
+  // This shared semaphore is the one authoritative cap on total in-flight
+  // requests; the nested mapLimit numbers stay as they are because they can no
+  // longer multiply past this gate.
+  let activeRequests = 0;
+  const waitingForSlot = [];
+  async function withRequestSlot(issue) {
+    if (activeRequests < MAX_CONCURRENT_WINDOWS) {
+      activeRequests += 1;
+    } else {
+      await new Promise((resolve) => waitingForSlot.push(resolve));
+    }
+    try {
+      return await issue();
+    } finally {
+      // Hand the freed slot straight to a waiter without dropping the count, so
+      // a newcomer cannot race in between the decrement and the wake and push us
+      // over the cap. Only decrement when nobody is waiting. `finally` guarantees
+      // a thrown or timed-out request never leaks its slot.
+      const next = waitingForSlot.shift();
+      if (next) next();
+      else activeRequests -= 1;
+    }
+  }
+
   // The network call is delegated to the background service worker. Fetching
-  // from here would carry YouTube's origin and be blocked by CORS.
+  // from here would carry YouTube's origin and be blocked by CORS. This is the
+  // single low-level issuer every request type passes through, so the gate above
+  // sees all of them.
+  function sendToBackground(type, payload) {
+    return withRequestSlot(
+      () =>
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ type, payload }, (response) => {
+            if (chrome.runtime.lastError) {
+              resolve({ ok: false, error: chrome.runtime.lastError.message });
+              return;
+            }
+            resolve(response || { ok: false, error: 'no_response' });
+          });
+        })
+    );
+  }
+
   function askBackground(payload) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: 'focusflow:generate-questions', payload },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            resolve({ ok: false, error: chrome.runtime.lastError.message });
-            return;
-          }
-          resolve(response || { ok: false, error: 'no_response' });
-        }
-      );
-    });
+    return sendToBackground('focusflow:generate-questions', payload);
   }
 
   function askSegment(payload) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: 'focusflow:segment-video', payload },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            resolve({ ok: false, error: chrome.runtime.lastError.message });
-            return;
-          }
-          resolve(response || { ok: false, error: 'no_response' });
-        }
-      );
-    });
+    return sendToBackground('focusflow:segment-video', payload);
   }
 
   function askChapters(payload) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: 'focusflow:classify-chapters', payload },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            resolve({ ok: false, error: chrome.runtime.lastError.message });
-            return;
-          }
-          resolve(response || { ok: false, error: 'no_response' });
-        }
-      );
-    });
+    return sendToBackground('focusflow:classify-chapters', payload);
   }
 
   /**
@@ -254,11 +271,14 @@ window.FocusFlow.ai = (() => {
       requests: 0,
     };
 
-    let batchIndex = 0;
-    for (const batch of batches) {
-      batchIndex += 1;
+    // Batches are independent requests, and wall-clock time is dominated by the
+    // model latency of a single request, so we dispatch them in parallel (capped
+    // at MAX_CONCURRENT_WINDOWS) rather than waiting for each to finish before
+    // sending the next. mapLimit returns results in input order, so the fold
+    // below stays deterministic and bySlot assignment is unchanged.
+    const results = await mapLimit(batches, MAX_CONCURRENT_WINDOWS, async (batch, i) => {
+      const batchIndex = i + 1;
       const chars = batch.reduce((sum, chunk) => sum + String(chunk.text || '').length, 0);
-      charsSent += chars;
       if (typeof onRequestSent === 'function') {
         onRequestSent({ mode: 'questions', windowIndex: batchIndex, totalWindows: batches.length, chars });
       }
@@ -266,7 +286,6 @@ window.FocusFlow.ai = (() => {
       const where = `batch ${batchIndex}/${batches.length} (${span}, ${batch.length} section(s))`;
       const result = await askBackground({ videoId, title, chunks: batch });
       let retried = false;
-      if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
         if (isRetryable(result?.error)) {
           console.warn(`[FocusFlow] ${where} ${describeError(result.error)} — retrying once`);
@@ -277,6 +296,12 @@ window.FocusFlow.ai = (() => {
           }
         }
       }
+      return { batch, chars, result, retried, where };
+    });
+
+    for (const { batch, chars, result, retried, where } of results) {
+      charsSent += chars;
+      if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
         console.warn(

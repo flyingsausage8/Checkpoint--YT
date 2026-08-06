@@ -152,6 +152,28 @@ html[dark] .ffp-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1);
 
 html[dark] .ffp-settings { border-top-color: rgba(255, 255, 255, 0.12); }
 
+/* Small section headings so related controls read as groups ("This video",
+   "Timing", "Questions") instead of one long list. Uppercase muted label in
+   the same family as the popup's .section-title, tinted with the cyan accent. */
+.ffp-group-title {
+  margin: 4px 0 -2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #06b6d4;
+}
+
+html[dark] .ffp-group-title { color: #22d3ee; }
+
+/* The first heading ("This video") sits above the summary, not inside the
+   bordered settings block, so it needs its own top spacing. */
+.ffp-body > .ffp-group-title:first-child { margin-top: 0; margin-bottom: 6px; }
+
+/* The live checkpoint count reads as the consequence of the slider above it,
+   so it is nudged up snug against that control rather than floating free. */
+.ffp-estimate { margin-top: -2px; }
+
 .ffp-row { display: flex; flex-direction: column; gap: 5px; }
 
 .ffp-label {
