@@ -81,6 +81,8 @@ const FOCUS_PART_IDS = ['homeFeed', 'related', 'comments', 'shorts', 'endScreen'
 const SETTINGS_SCHEMA = {
   enabled: { type: 'boolean' },
   chunkMinutes: { type: 'number', min: 1, max: 60 },
+  sectionMinMinutes: { type: 'number', min: 0.5, max: 60 },
+  sectionMaxMinutes: { type: 'number', min: 1, max: 120 },
   minVideoMinutes: { type: 'number', min: 0, max: 600 },
   autoPause: { type: 'boolean' },
   useAI: { type: 'boolean' },

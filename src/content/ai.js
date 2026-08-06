@@ -24,6 +24,22 @@ window.FocusFlow.ai = (() => {
   const RUNT_MIN_CHARS = 2000;
   const RUNT_MERGE_SLACK = 1.5;
 
+  // Enough of a chapter's opening for the model to recognise a sponsor read or a
+  // channel intro, without turning classification into a second transcript
+  // upload. The backend caps this at 600 too.
+  const CHAPTER_SAMPLE_CHARS = 600;
+
+  // True/false statements skew heavily towards True unless the answer is asked
+  // for explicitly, so each section is handed a required polarity and they
+  // alternate. Sections are numbered across the whole video, so the alternation
+  // survives being split into parallel windows.
+  const tfAnswerFor = (position) => (position % 2 === 0 ? 'True' : 'False');
+
+  // Failures worth one more attempt: they are about the trip, not the request.
+  // A 400/403/413 will be rejected identically, and retrying a 429 rate limit
+  // only pushes the limit further out of reach.
+  const RETRYABLE_ERRORS = new Set(['timeout', 'network', 'http_500', 'http_502', 'http_503', 'http_504']);
+
   // Turns an internal reason/error code into a short, human-readable sentence so
   // console warnings tell the owner what actually happened instead of `http_502`.
   function describeError(code) {
@@ -81,6 +97,76 @@ window.FocusFlow.ai = (() => {
     });
   }
 
+  function askChapters(payload) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: 'focusflow:classify-chapters', payload },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response || { ok: false, error: 'no_response' });
+        }
+      );
+    });
+  }
+
+  /**
+   * Asks which chapters are not part of the video's actual material — a sponsor
+   * read, a channel intro, a channel outro — so those get no checkpoint.
+   *
+   * Every failure path keeps every chapter. Being made to answer a question
+   * about an advert is a small annoyance; silently dropping five minutes of real
+   * material is a bug nobody would ever spot.
+   */
+  async function classifyChapters({ videoId, title, chapters, cues }) {
+    const keepAll = (reason) => ({
+      verdicts: chapters.map((chapter) => ({ index: chapter.index, skip: false, reason: 'content' })),
+      reason,
+    });
+    if (!AI_PROXY_ENABLED_IN_THIS_BUILD) return keepAll('disabled_in_build');
+    if (!Array.isArray(chapters) || !chapters.length) return keepAll('no_chapters');
+
+    const payload = {
+      videoId,
+      title,
+      chapters: chapters.map((chapter) => ({
+        index: chapter.index,
+        startSeconds: chapter.startSeconds,
+        endSeconds: chapter.endSeconds,
+        title: chapter.title,
+        // The opening of a chapter is where a sponsor read announces itself, so
+        // a sample from the start is worth more than one from the middle.
+        sample: window.FocusFlow.captions
+          .textBetween(cues || [], chapter.startSeconds, chapter.endSeconds)
+          .slice(0, CHAPTER_SAMPLE_CHARS),
+      })),
+    };
+
+    const result = await askChapters(payload);
+    if (!result?.ok || !Array.isArray(result.chapters)) {
+      const error = result?.error || result?.reason || 'unknown';
+      console.warn('[FocusFlow] chapter classification failed:', describeError(error));
+      return keepAll(error);
+    }
+
+    const byIndex = new Map(result.chapters.map((verdict) => [verdict.index, verdict]));
+    return {
+      verdicts: chapters.map((chapter) => {
+        const verdict = byIndex.get(chapter.index);
+        return {
+          index: chapter.index,
+          skip: verdict?.skip === true,
+          reason: verdict?.reason || 'content',
+        };
+      }),
+      reason: result.reason || 'ok',
+      endpoint: result.endpoint,
+      diagnostics: result.diagnostics,
+    };
+  }
+
   function batchChunks(chunks) {
     const batches = [];
     let current = [];
@@ -131,7 +217,12 @@ window.FocusFlow.ai = (() => {
       return { questions: null, reason: 'no_chunks' };
     }
 
-    const batches = batchChunks(chunks);
+    const batches = batchChunks(
+      // Each chunk carries the answer its true/false statement must have, if the
+      // model chooses to write one. Assigned here rather than server-side so the
+      // alternation is continuous across separate requests.
+      chunks.map((chunk, position) => ({ ...chunk, tfAnswer: tfAnswerFor(position) }))
+    );
     const bySlot = new Array(chunks.length).fill(null);
     let covered = 0;
     let lastError = null;
@@ -157,6 +248,15 @@ window.FocusFlow.ai = (() => {
       }
       const result = await askBackground({ videoId, title, chunks: batch });
       if (result?.endpoint) endpoint = result.endpoint;
+      if (!result?.ok) {
+        if (RETRYABLE_ERRORS.has(result?.error)) {
+          console.warn('[FocusFlow] retrying question batch after ' + describeError(result.error));
+          const retry = await askBackground({ videoId, title, chunks: batch });
+          if (retry?.ok) {
+            Object.assign(result, retry);
+          }
+        }
+      }
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
         console.warn('[FocusFlow] AI batch failed:', describeError(lastError));
@@ -213,7 +313,7 @@ window.FocusFlow.ai = (() => {
   // the per-request line, character, and duration caps. Windows tile the whole
   // video: the first starts at 0, each following one starts where the previous
   // ended, and the last runs to durationSeconds so nothing is left uncovered.
-  function buildWindows(lines, durationSeconds, minSectionSeconds) {
+  function buildWindows(lines, durationSeconds, minSectionSeconds, startSeconds = 0) {
     const groups = [];
     let current = [];
     let chars = 0;
@@ -252,7 +352,7 @@ window.FocusFlow.ai = (() => {
 
     return groups.map((group, i) => ({
       lines: group,
-      windowStart: i === 0 ? 0 : group[0].t,
+      windowStart: i === 0 ? startSeconds : group[0].t,
       windowEnd: i === groups.length - 1 ? durationSeconds : groups[i + 1][0].t,
     }));
   }
@@ -262,44 +362,68 @@ window.FocusFlow.ai = (() => {
   // Windows are dispatched in parallel (capped) and their sections are stitched
   // back in time order, with question index renumbered sequentially (1-based).
   // `onRequestSent` (optional) fires just before each window is dispatched.
-  async function segmentVideo({ videoId, title, cues, durationSeconds, settings, onRequestSent }) {
+  async function segmentVideo({ videoId, title, cues, durationSeconds, settings, range, onRequestSent }) {
     if (!AI_PROXY_ENABLED_IN_THIS_BUILD) return { sections: null, reason: 'disabled_in_build' };
     if (!videoId || !Array.isArray(cues) || !cues.length) {
       return { sections: null, reason: 'no_transcript' };
     }
+
+    // A range confines segmentation to part of the video. Used for a chapter
+    // that is longer than the maximum section length: its own boundary still
+    // stands, but the AI is asked to find extra breaks inside it.
+    const rangeStart = range ? Math.max(0, Math.round(range.start)) : 0;
+    const rangeEnd = range ? Math.round(range.end) : null;
 
     const lines = cues
       .map((cue) => ({
         t: Math.max(0, Math.round(Number(cue.start) || 0)),
         text: String(cue.text || '').trim(),
       }))
-      .filter((line) => line.text);
+      .filter((line) => line.text)
+      .filter((line) => (rangeEnd === null ? true : line.t >= rangeStart && line.t < rangeEnd));
     if (!lines.length) return { sections: null, reason: 'no_transcript' };
 
-    const total = Math.max(Number(durationSeconds) || 0, lines[lines.length - 1].t + 1);
-    // Treat the chunk-length setting as a target section length so the setting
-    // stays meaningful: sections land between half and 1.5x the target.
-    const target = ((settings && settings.chunkMinutes) || 3) * 60;
-    const minSectionSeconds = Math.max(45, Math.round(target * 0.5));
-    const maxSectionSeconds = Math.max(minSectionSeconds + 60, Math.round(target * 1.5));
+    const total =
+      rangeEnd === null
+        ? Math.max(Number(durationSeconds) || 0, lines[lines.length - 1].t + 1)
+        : rangeEnd;
+    const bounds = window.FocusFlowSettings.sectionBounds(settings);
+    const minSectionSeconds = bounds.min;
+    const maxSectionSeconds = bounds.max;
 
-    const windows = buildWindows(lines, total, minSectionSeconds).filter((win) => win.windowEnd > win.windowStart);
+    const windows = buildWindows(lines, total, minSectionSeconds, rangeStart).filter(
+      (win) => win.windowEnd > win.windowStart
+    );
     const totalWindows = windows.length;
 
     const results = await mapLimit(windows, MAX_CONCURRENT_WINDOWS, async (win, i) => {
       const chars = win.lines.reduce((sum, line) => sum + line.text.length, 0);
-      if (typeof onRequestSent === 'function') {
-        onRequestSent({ mode: 'segment', windowIndex: i + 1, totalWindows, chars });
-      }
-      const result = await askSegment({
+      const request = {
         videoId,
         title,
         windowStart: win.windowStart,
         windowEnd: win.windowEnd,
         minSectionSeconds,
         maxSectionSeconds,
+        // Windows run in parallel, so each is told which polarity to start on
+        // rather than being left to alternate in ignorance of its neighbours.
+        tfStart: tfAnswerFor(i),
         lines: win.lines,
-      });
+      };
+      if (typeof onRequestSent === 'function') {
+        onRequestSent({ mode: 'segment', windowIndex: i + 1, totalWindows, chars });
+      }
+      let result = await askSegment(request);
+
+      // A window that fails takes its whole time range down with it — several
+      // minutes of video left with no checkpoints — and timeouts and transient
+      // 5xx are common enough to be worth one more go. Only retry failures that
+      // could plausibly succeed on a second attempt: a rejected payload or a
+      // rate limit will fail identically, and retrying a 429 makes it worse.
+      if (!result?.ok && RETRYABLE_ERRORS.has(result?.error)) {
+        console.warn('[FocusFlow] retrying segment window after ' + describeError(result.error));
+        result = await askSegment(request);
+      }
       return { win, chars, result };
     });
 
@@ -374,5 +498,5 @@ window.FocusFlow.ai = (() => {
     };
   }
 
-  return { generateForVideo, segmentVideo, describeError, DEFAULT_PROXY_URL };
+  return { generateForVideo, segmentVideo, classifyChapters, describeError, DEFAULT_PROXY_URL };
 })();

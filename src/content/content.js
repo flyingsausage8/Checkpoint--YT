@@ -1,17 +1,15 @@
 (() => {
   const DEFAULT_PROXY_URL = 'https://func-checkpoint-yt-pb5kh8.azurewebsites.net/api/generate';
   const AI_PROXY_ENABLED_IN_THIS_BUILD = true;
-  const DEFAULT_SETTINGS = {
-    enabled: true,
-    chunkMinutes: 3,
-    minVideoMinutes: 4,
-    autoPause: true,
-    useAI: true,
-    aiCheckpoints: true,
-    proxyUrl: DEFAULT_PROXY_URL,
-  };
+  // The shared module is the only definition of what a setting is and what it
+  // defaults to. Keeping a second copy here is what let the new section-length
+  // keys reach the panel but never the planner.
+  const DEFAULT_SETTINGS = window.FocusFlowSettings.DEFAULTS;
   const END_BUFFER_SECONDS = 30;
   const MIN_AI_WORDS = 100;
+  // Kept below the backend's per-request transcript budget so one section can
+  // never be too large to ask a question about on its own.
+  const MAX_CHAPTER_CHARS = 8000;
   const MAX_QUESTION_CACHE_VIDEOS = 50;
   const TRACE_ENABLED = true;
   const transcriptCache = new Map();
@@ -129,6 +127,10 @@
       saved = await storageGet('sync', DEFAULT_SETTINGS);
     }
     return {
+      // Everything the shared module knows about passes through untouched, so a
+      // new setting never has to be added here as well to take effect.
+      ...DEFAULT_SETTINGS,
+      ...saved,
       enabled: saved.enabled !== false,
       chunkMinutes: clampNumber(saved.chunkMinutes, 1, 20, DEFAULT_SETTINGS.chunkMinutes),
       minVideoMinutes: Math.max(
@@ -477,6 +479,152 @@
       failedWindows: result.failedWindows || [],
       totalWindows: result.totalWindows || 0,
     };
+  }
+
+  // Issue #8: when the uploader wrote chapters, they are a better description of
+  // the video's structure than anything a model can infer, so every chapter end
+  // becomes a checkpoint. Chapters that are not part of the material (sponsor
+  // reads, channel intros and outros) get none. A chapter longer than the
+  // viewer's maximum is handed to segment mode so it gains interior breaks.
+  //
+  // Returns null when the video has no chapters, so the caller falls through to
+  // whole-video segmentation.
+  async function planChapterSections(videoId, title, transcript, durationSeconds, settings, onRequestSent) {
+    const cues = transcript.cues || [];
+    const chapters = await window.FocusFlow.captions.fetchChapters(videoId, durationSeconds);
+    if (!chapters || chapters.length < 2) return null;
+
+    // A chapter plan costs a classification call plus a question call, so a
+    // second visit to the same video should not pay for it again.
+    const key = `plan:${videoId}`;
+    try {
+      const saved = await storageGet('local', key);
+      const cached = saved[key];
+      if (cached?.sections?.length && cached.bounds === settings.sectionMaxMinutes) {
+        const sections = cached.sections.filter((section) =>
+          window.FocusFlow.validate.questions([section.question], 1)
+        );
+        if (sections.length === cached.sections.length) {
+          return { ...cached, sections, cached: true };
+        }
+      }
+    } catch (error) {
+      log('Could not read chapter plan cache:', error);
+    }
+
+    const classification = await window.FocusFlow.ai.classifyChapters({ videoId, title, chapters, cues });
+    const verdicts = new Map((classification?.verdicts || []).map((verdict) => [verdict.index, verdict]));
+
+    const skipped = [];
+    const kept = chapters.filter((chapter) => {
+      const verdict = verdicts.get(chapter.index);
+      if (!verdict?.skip) return true;
+      skipped.push({ title: chapter.title, reason: verdict.reason, startSeconds: chapter.startSeconds });
+      return false;
+    });
+    if (!kept.length) {
+      return { sections: [], chapters, skipped, reason: 'every chapter was classified as non-content' };
+    }
+
+    const bounds = window.FocusFlowSettings.sectionBounds(settings);
+    const sections = [];
+    let splitFailures = 0;
+
+    const longChapters = kept.filter((c) => c.endSeconds - c.startSeconds > bounds.max);
+    trace(
+      4,
+      `chapter plan: ${kept.length} of ${chapters.length} chapters kept, ` +
+        `${longChapters.length} longer than ${bounds.max}s and due to be split`
+    );
+
+    for (const chapter of kept) {
+      const span = chapter.endSeconds - chapter.startSeconds;
+      const text = window.FocusFlow.captions.textBetween(cues, chapter.startSeconds, chapter.endSeconds);
+      // Minutes are not the only way a chapter can be too big. A fast talker, or
+      // a viewer who set the maximum to half an hour, produces a chapter whose
+      // transcript alone would blow the per-request character budget, so the
+      // character count gets a say as well.
+      if (span > bounds.max || text.length > MAX_CHAPTER_CHARS) {
+        const result = await window.FocusFlow.ai.segmentVideo({
+          videoId,
+          title,
+          cues,
+          durationSeconds,
+          settings,
+          range: { start: chapter.startSeconds, end: chapter.endSeconds },
+          onRequestSent,
+        });
+        const validated = result?.sections ? window.FocusFlow.validate.sections(result.sections) : null;
+        if (validated && validated.length) {
+          validated.forEach((section) => {
+            sections.push({
+              startSeconds: section.startSeconds,
+              endSeconds: section.endSeconds,
+              title: section.title || chapter.title,
+              question: section.question || null,
+            });
+          });
+          continue;
+        }
+        // The split failed, but the chapter itself is still a valid section, so
+        // the viewer loses the extra breaks rather than the whole chapter.
+        splitFailures += 1;
+      }
+
+      sections.push({
+        startSeconds: chapter.startSeconds,
+        endSeconds: chapter.endSeconds,
+        title: chapter.title,
+        question: null,
+      });
+    }
+
+    // Whatever segment mode did not already answer needs a question of its own.
+    const pending = sections
+      .map((section, position) => ({ section, position }))
+      .filter((entry) => !entry.section.question);
+
+    if (pending.length) {
+      const chunks = pending.map((entry, i) => ({
+        index: i + 1,
+        startSeconds: entry.section.startSeconds,
+        endSeconds: entry.section.endSeconds,
+        text: window.FocusFlow.captions
+          .textBetween(cues, entry.section.startSeconds, entry.section.endSeconds)
+          // Last line of defence: a section that survived every split above and
+          // is still enormous gets trimmed rather than failing the whole batch.
+          .slice(0, MAX_CHAPTER_CHARS),
+      }));
+      const result = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks, onRequestSent });
+      (result?.questions || []).forEach((question, i) => {
+        if (question && pending[i]) pending[i].section.question = question;
+      });
+    }
+
+    const usable = sections.filter((section) => section.question);
+    const plan = {
+      sections: usable,
+      chapters,
+      skipped,
+      splitFailures,
+      dropped: sections.length - usable.length,
+      classificationReason: classification?.reason,
+    };
+
+    // Only a complete plan is worth keeping. Caching one with holes in it would
+    // make a transient AI failure permanent for that video.
+    if (usable.length === sections.length && usable.length) {
+      try {
+        await storageSet('local', {
+          [`plan:${videoId}`]: { ...plan, bounds: settings.sectionMaxMinutes, createdAt: Date.now() },
+        });
+        await evictCache('plan:', MAX_QUESTION_CACHE_VIDEOS);
+      } catch (error) {
+        log('Could not cache chapter plan:', error);
+      }
+    }
+
+    return plan;
   }
 
   async function loadAIQuestions(videoId, title, chunks, transcript, settings, onRequestSent) {
@@ -838,6 +986,60 @@
         const endpoint = resolveEndpoint(settings.proxyUrl);
         const onRequestSent = (info) => traceRequestSent(endpoint, info);
         const heartbeat = startHeartbeat();
+        let chapterPlan = null;
+        try {
+          chapterPlan = await planChapterSections(
+            videoId,
+            state.title,
+            transcript,
+            durationSeconds,
+            settings,
+            onRequestSent
+          );
+        } catch (error) {
+          traceWarn(2, 'chapter planning failed: ' + String(error?.message || error));
+        } finally {
+          clearInterval(heartbeat);
+        }
+        if (token.cancelled) return;
+
+        if (chapterPlan) {
+          chapterPlan.skipped.forEach((chapter) => {
+            trace(4, `skipped chapter "${chapter.title}" (${chapter.reason})`, {
+              startSeconds: chapter.startSeconds,
+            });
+          });
+          if (chapterPlan.splitFailures) {
+            traceWarn(2, `${chapterPlan.splitFailures} long chapter(s) could not be split further`);
+          }
+          if (chapterPlan.dropped) {
+            traceWarn(2, `${chapterPlan.dropped} chapter section(s) had no AI question and were dropped`);
+          }
+
+          if (chapterPlan.sections.length) {
+            const plan = planFromSections(chapterPlan.sections, [], durationSeconds, settings.chunkMinutes);
+            if (plan.checkpoints.length) {
+              checkpoints = plan.checkpoints;
+              aiQuestions = plan.aiQuestions;
+              sectionTitles = plan.sectionTitles;
+              usedSegmentation = true;
+              aiReason = 'ok';
+              trace(4, 'checkpoints follow the video\'s own chapters', {
+                chapters: chapterPlan.chapters.length,
+                skipped: chapterPlan.skipped.length,
+                checkpoints: plan.checkpoints.length,
+              });
+            }
+          } else {
+            traceWarn(2, 'chapter plan produced no usable sections; falling back to AI segmentation');
+          }
+        }
+      }
+
+      if (canSegment && !usedSegmentation) {
+        const endpoint = resolveEndpoint(settings.proxyUrl);
+        const onRequestSent = (info) => traceRequestSent(endpoint, info);
+        const heartbeat = startHeartbeat();
         const startedAt = Date.now();
         let segResult;
         try {
@@ -977,6 +1179,8 @@
       }
 
       state.checkpoints = checkpoints;
+      state.aiQuestions = aiQuestions;
+      state.sectionTitles = sectionTitles;
 
       window.FocusFlow.markers.attach({ checkpoints, durationSeconds, video });
       window.FocusFlow.markers.setCurrentTime(video.currentTime || 0);
@@ -1169,6 +1373,18 @@
     progress: progressSnapshot,
     hasCheckpoints: () => Boolean(state?.triggerNow && state.checkpoints?.length),
     triggerNow: () => (state?.triggerNow ? state.triggerNow() : Promise.resolve(false)),
+    // Read-only view of the current plan, so a checkpoint that landed in an odd
+    // place can be inspected from the page console without adding logging.
+    plan: () =>
+      state
+        ? {
+            videoId: state.videoId,
+            durationSeconds: state.durationSeconds,
+            checkpoints: state.checkpoints || [],
+            questions: state.aiQuestions || [],
+            titles: state.sectionTitles || [],
+          }
+        : null,
   };
 
   window.FocusFlow.panel.init();

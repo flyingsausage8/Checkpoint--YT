@@ -33,6 +33,8 @@ import {
 const SYNC_KEYS = [
   'enabled',
   'chunkMinutes',
+  'sectionMinMinutes',
+  'sectionMaxMinutes',
   'minVideoMinutes',
   'autoPause',
   'useAI',

@@ -203,6 +203,28 @@ html[dark] .ffp-row input[type="number"] { border-color: rgba(255, 255, 255, 0.2
 
 .ffp-row-check .ffp-hint { margin-left: 25px; }
 
+.ffp-fine { margin: -4px 0 12px; }
+
+.ffp-fine-head {
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.7;
+  list-style: none;
+  user-select: none;
+}
+
+.ffp-fine-head::-webkit-details-marker { display: none; }
+.ffp-fine-head::before { content: '▸ '; }
+.ffp-fine[open] .ffp-fine-head::before { content: '▾ '; }
+
+.ffp-fine-body {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(6, 182, 212, 0.35);
+}
+
+.ffp-fine-body .ffp-row { margin-bottom: 8px; }
+
 .ffp-save {
   min-height: 15px;
   margin-top: 10px;

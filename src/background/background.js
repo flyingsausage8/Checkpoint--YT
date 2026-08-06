@@ -106,6 +106,20 @@ async function requestSegments(payload) {
   };
 }
 
+// Issue #8: chapter mode asks which chapters are sponsor reads or channel
+// branding rather than the video's actual material.
+async function requestChapters(payload) {
+  const result = await postToBackend({ ...payload, mode: 'chapters' });
+  if (!result.ok) return { ok: false, error: result.error, endpoint: result.endpoint };
+  return {
+    ok: true,
+    chapters: result.body.chapters,
+    reason: result.body.reason,
+    diagnostics: result.body.diagnostics,
+    endpoint: result.endpoint,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'focusflow:generate-questions') {
     requestQuestions(message.payload || {})
@@ -116,6 +130,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === 'focusflow:segment-video') {
     requestSegments(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (message?.type === 'focusflow:classify-chapters') {
+    requestChapters(message.payload || {})
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;

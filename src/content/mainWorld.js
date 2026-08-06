@@ -19,6 +19,54 @@
   const TIMEDTEXT = new Map(); // videoId (the `v` param) -> full pot-bearing URL
   const PANELCUES = new Map(); // videoId -> { cues:[{start,text}], endpoint }
   const LENGTHS = new Map(); // videoId -> real length in seconds (ads cannot skew it)
+  const CHAPTERS = new Map(); // videoId -> [{ startSeconds, title }]
+
+  /**
+   * The author's own chapter list, which is far better than anything we could
+   * infer: a human already decided where this video changes subject.
+   *
+   * It lives in `ytInitialData`, not the player response, and only in the page's
+   * own world — hence reading it here. `DESCRIPTION_CHAPTERS` are the ones the
+   * uploader wrote; `AUTO_CHAPTERS` are YouTube's guesses, taken only when there
+   * are no written ones. Other marker kinds in the same map (heatmaps,
+   * animations) are not chapters and are ignored.
+   */
+  function readChapters(videoId, data) {
+    try {
+      if (!videoId || CHAPTERS.has(videoId)) return;
+      const markers =
+        data?.playerOverlays?.playerOverlayRenderer?.decoratedPlayerBarRenderer
+          ?.decoratedPlayerBarRenderer?.playerBar?.multiMarkersPlayerBarRenderer?.markersMap;
+      if (!Array.isArray(markers)) return;
+
+      const preferred = ['DESCRIPTION_CHAPTERS', 'AUTO_CHAPTERS'];
+      let list = null;
+      for (const key of preferred) {
+        const found = markers.find((marker) => marker?.key === key);
+        if (found?.value?.chapters?.length) {
+          list = found.value.chapters;
+          break;
+        }
+      }
+      if (!list) return;
+
+      const chapters = [];
+      for (const entry of list) {
+        const renderer = entry?.chapterRenderer;
+        if (!renderer) continue;
+        const startSeconds = Number(renderer.timeRangeStartMillis) / 1000;
+        if (!isFinite(startSeconds)) continue;
+        const title =
+          renderer.title?.simpleText ||
+          (renderer.title?.runs || []).map((run) => run.text || '').join('') ||
+          '';
+        chapters.push({ startSeconds: Math.max(0, Math.round(startSeconds)), title: String(title) });
+      }
+      if (chapters.length) CHAPTERS.set(videoId, chapters.sort((a, b) => a.startSeconds - b.startSeconds));
+    } catch (_) {
+      /* malformed payload, ignore */
+    }
+  }
 
   function readTracks(playerResponse) {
     try {
@@ -177,6 +225,19 @@
           .then((data) => storePanelCues(currentVideoId(), extractTranscriptSegments(data), 'get_transcript'))
           .catch(() => {});
       }
+      // SPA navigation never reloads the page, so `window.ytInitialData` still
+      // describes whichever video was open first. The /next payload is where the
+      // chapters for the video being navigated TO arrive.
+      if (url.includes('/youtubei/v1/next')) {
+        result
+          .then((res) => res.clone().json())
+          .then((data) => {
+            const id =
+              data?.currentVideoEndpoint?.watchEndpoint?.videoId || currentVideoId();
+            readChapters(id, data);
+          })
+          .catch(() => {});
+      }
       if (url.includes('/api/timedtext')) {
         result
           .then((res) => res.clone().text())
@@ -248,6 +309,9 @@
     if (!CACHE.has(videoId) || !LENGTHS.has(videoId)) {
       readTracks(window.ytInitialPlayerResponse);
     }
+    // On a cold page load `ytInitialData` is already there; after SPA navigation
+    // the /youtubei/v1/next interception above has replaced it.
+    if (!CHAPTERS.has(videoId)) readChapters(videoId, window.ytInitialData);
 
     window.dispatchEvent(
       new CustomEvent('focusflow:tracks', {
@@ -258,6 +322,7 @@
           panelCues: PANELCUES.get(videoId)?.cues || null,
           panelCuesSource: PANELCUES.get(videoId)?.endpoint || null,
           lengthSeconds: LENGTHS.get(videoId) || null,
+          chapters: CHAPTERS.get(videoId) || null,
         },
       })
     );

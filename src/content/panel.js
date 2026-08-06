@@ -160,10 +160,61 @@ window.FocusFlow.panel = (() => {
     chunk.addEventListener('input', () => {
       settings.chunkMinutes = Number(chunk.value);
       chunkValue.textContent = `${settings.chunkMinutes} min`;
+      renderBounds();
       queueSave();
     });
-    const chunkRow = row('Check in about every', chunk, 'Only used when AI is not choosing the sections itself.');
+    const chunkRow = row(
+      'Check in about every',
+      chunk,
+      'The length AI aims for, and the exact spacing when AI is off.'
+    );
     chunkRow.querySelector('.ffp-label').appendChild(chunkValue);
+
+    // Fine-tune: the target above is what the AI aims for, but a topic rarely
+    // ends exactly on time, so these two give it room to move either way.
+    const fine = el('details', 'ffp-fine');
+    const fineHead = el('summary', 'ffp-fine-head', 'Fine-tune section length');
+    const fineBody = el('div', 'ffp-fine-body');
+
+    const shortest = document.createElement('input');
+    shortest.type = 'number';
+    shortest.id = 'ffp-sec-min';
+    shortest.min = '0.5';
+    shortest.max = '60';
+    shortest.step = '0.5';
+    const longest = document.createElement('input');
+    longest.type = 'number';
+    longest.id = 'ffp-sec-max';
+    longest.min = '1';
+    longest.max = '120';
+    longest.step = '0.5';
+    const fineNote = el('div', 'ffp-hint', '');
+
+    // One place decides what the three numbers really mean, so the sentence
+    // under them can never disagree with what the AI is actually told.
+    function renderBounds() {
+      const bounds = S.sectionBounds(settings);
+      const round = (seconds) => Math.round((seconds / 60) * 10) / 10;
+      shortest.value = String(round(bounds.min));
+      longest.value = String(round(bounds.max));
+      fineNote.textContent = `Sections will be ${round(bounds.min)}–${round(
+        bounds.max
+      )} minutes, aiming for ${round(bounds.target)}.`;
+    }
+
+    shortest.addEventListener('change', () => {
+      settings.sectionMinMinutes = Math.max(0.5, Number(shortest.value) || 0.5);
+      renderBounds();
+      queueSave();
+    });
+    longest.addEventListener('change', () => {
+      settings.sectionMaxMinutes = Math.max(1, Number(longest.value) || 1);
+      renderBounds();
+      queueSave();
+    });
+
+    fineBody.append(row('Shortest (min)', shortest), row('Longest (min)', longest), fineNote);
+    fine.append(fineHead, fineBody);
 
     const minLen = document.createElement('input');
     minLen.type = 'number';
@@ -187,7 +238,8 @@ window.FocusFlow.panel = (() => {
       'aiCheckpoints'
     );
 
-    settingsWrap.append(chunkRow, minRow, pause.wrap, useAI.wrap, aiCheckpoints.wrap);
+    settingsWrap.append(chunkRow, fine, minRow, pause.wrap, useAI.wrap, aiCheckpoints.wrap);
+    renderBounds();
 
     const saveNote = el('div', 'ffp-save', '');
     body.append(summary, ask, settingsWrap, saveNote);
@@ -208,6 +260,7 @@ window.FocusFlow.panel = (() => {
       pause: pause.input,
       useAI: useAI.input,
       aiCheckpoints: aiCheckpoints.input,
+      renderBounds,
       saveNote,
     };
 
@@ -347,6 +400,7 @@ window.FocusFlow.panel = (() => {
     els.pause.checked = settings.autoPause !== false;
     els.useAI.checked = settings.useAI !== false;
     els.aiCheckpoints.checked = settings.aiCheckpoints !== false;
+    els.renderBounds();
     renderPower();
   }
 

@@ -23,7 +23,7 @@ window.FocusFlow.validate = (() => {
     if (item.type !== 'mc' && item.type !== 'tf') return null;
 
     const prompt = cleanString(item.prompt || '');
-    if (prompt.length < 10 || prompt.length > 400) return null;
+    if (prompt.length < 10 || prompt.length > 220) return null;
 
     let choices = Array.isArray(item.choices) ? item.choices.map(cleanString) : [];
     if (item.type === 'tf') {
@@ -32,7 +32,7 @@ window.FocusFlow.validate = (() => {
     }
 
     if (choices.length < 2 || choices.length > 4) return null;
-    if (choices.some((choice) => choice.length < 1 || choice.length > 200)) return null;
+    if (choices.some((choice) => choice.length < 1 || choice.length > 120)) return null;
     if (!uniqueStrings(choices)) return null;
 
     const answerIndex = item.answerIndex;
@@ -41,7 +41,7 @@ window.FocusFlow.validate = (() => {
     }
 
     const note = cleanString(item.note || '');
-    if (note.length > 300) return null;
+    if (note.length > 200) return null;
     if (containsDangerousString([prompt, note, ...choices])) return null;
 
     return { type: item.type, prompt, choices, answerIndex, note };

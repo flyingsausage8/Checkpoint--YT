@@ -114,6 +114,7 @@ window.FocusFlow.captions = (() => {
           timedTextUrl: event.detail.timedTextUrl || null,
           panelCues: event.detail.panelCues || null,
           panelCuesSource: event.detail.panelCuesSource || null,
+          chapters: event.detail.chapters || null,
         });
       }
 
@@ -513,6 +514,41 @@ window.FocusFlow.captions = (() => {
   }
 
   /** Returns the transcript text spoken between two timestamps. */
+  /**
+   * The author's own chapter list, or null when the video has none.
+   *
+   * Returned as `{ startSeconds, endSeconds, title }` with the ends filled in
+   * from the following chapter, because everything downstream reasons about
+   * ranges and YouTube only stores start times. A single chapter covering the
+   * whole video is not a real division of it, so it is reported as none.
+   */
+  async function fetchChapters(videoId, durationSeconds) {
+    const info = await requestTrackInfo(videoId);
+    const raw = Array.isArray(info.chapters) ? info.chapters : [];
+    if (raw.length < 2) return null;
+
+    const total = Number(durationSeconds);
+    const chapters = [];
+    raw.forEach((chapter, i) => {
+      const startSeconds = Math.max(0, Math.round(Number(chapter.startSeconds) || 0));
+      const next = raw[i + 1];
+      const endSeconds = next
+        ? Math.round(Number(next.startSeconds) || 0)
+        : Number.isFinite(total) && total > startSeconds
+        ? Math.round(total)
+        : null;
+      if (endSeconds === null || endSeconds <= startSeconds) return;
+      chapters.push({
+        index: chapters.length + 1,
+        startSeconds,
+        endSeconds,
+        title: String(chapter.title || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      });
+    });
+
+    return chapters.length >= 2 ? chapters : null;
+  }
+
   function textBetween(cues, fromSeconds, toSeconds) {
     return cues
       .filter((cue) => cue.start >= fromSeconds && cue.start < toSeconds)
@@ -524,6 +560,7 @@ window.FocusFlow.captions = (() => {
 
   return {
     fetchTranscript,
+    fetchChapters,
     textBetween,
     diagnose,
     // Exposed for unit testing of pure logic; not part of the public contract.

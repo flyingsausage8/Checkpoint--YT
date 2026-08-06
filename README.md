@@ -48,6 +48,24 @@ Open the FocusFlow popup while on a YouTube watch page. The **Current video stat
 - A live stream or Short.
 
 
+## Where the checkpoints come from
+
+Checkpoints are placed by whichever source knows the video best.
+
+1. **The uploader's own chapters, when the video has them.** Chapter boundaries are real topic changes written by a person, so every chapter end becomes a checkpoint — even a short one. Nothing the AI does can move or ignore them.
+2. **Minus the parts that are not the video.** One small AI call sees each chapter's title and the first few hundred characters of what is said in it, and labels it `sponsor`, `intro`, `outro`, or `content`. The first three get no checkpoint, so you are never quizzed on an advert or a channel outro. Every failure keeps every chapter, and each skip is logged with its reason, so a missing checkpoint is always explainable.
+3. **Splitting a chapter that is too long.** A chapter longer than your **Longest** setting is handed to the AI to find breaks *inside* it. It only ever receives that chapter's transcript, and it cannot cross the chapter's edges.
+4. **No chapters?** The AI reads the whole transcript in parallel windows and picks the breaks itself, snapping each one onto the nearest pause so it lands where the old topic ended rather than a sentence into the new one.
+
+### Section length
+
+Three numbers, in the panel beside the video:
+
+- **Check in about every** — the length the AI aims for.
+- **Fine-tune → Shortest / Longest** — how far either way it may stray. Sections shorter than **Shortest** are not proposed; anything longer than **Longest** gets split.
+
+They are clamped so they cannot cross, and the panel prints the result as a sentence ("Sections will be 2–5 minutes, aiming for 3."). Chapters override all three: a 40-second chapter still gets its checkpoint.
+
 ## Where each setting lives
 
 The two surfaces are split by what they apply to, not by how important they are.

@@ -41,6 +41,13 @@ window.FocusFlowSettings = (() => {
   const DEFAULTS = {
     enabled: true,
     chunkMinutes: 3,
+    // The shortest and longest a section may be when the AI is choosing the
+    // breaks. chunkMinutes is the target it aims for; these two are the walls it
+    // may not cross. Kept as separate settings rather than derived from the
+    // target (they used to be target x0.5 and x1.5) because a fixed ratio cannot
+    // express "roughly 3 minutes, but never interrupt me twice in a minute".
+    sectionMinMinutes: 2,
+    sectionMaxMinutes: 5,
     minVideoMinutes: 4,
     autoPause: true,
     useAI: true,
@@ -83,6 +90,27 @@ window.FocusFlowSettings = (() => {
     return [...STANDARD_PART_IDS];
   }
 
+  /**
+   * The three section lengths in seconds, always ordered min <= target <= max.
+   *
+   * Settings can arrive from an older version, from another device, or from a
+   * half-finished edit in a number box, so the ordering is enforced here rather
+   * than trusted. Everything that plans sections reads this, so the AI, the
+   * timed fallback and the panel's summary sentence can never disagree.
+   */
+  function sectionBounds(settings) {
+    const minutes = (value, fallback) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? number : fallback;
+    };
+    const target = minutes(settings?.chunkMinutes, DEFAULTS.chunkMinutes) * 60;
+    let min = minutes(settings?.sectionMinMinutes, DEFAULTS.sectionMinMinutes) * 60;
+    let max = minutes(settings?.sectionMaxMinutes, DEFAULTS.sectionMaxMinutes) * 60;
+    min = Math.max(45, Math.min(min, target));
+    max = Math.max(max, target, min + 60);
+    return { target: Math.round(target), min: Math.round(min), max: Math.round(max) };
+  }
+
   async function activeAccountSub() {
     const { activeAccount } = await chrome.storage.local.get({ activeAccount: null });
     return activeAccount;
@@ -117,6 +145,7 @@ window.FocusFlowSettings = (() => {
     normaliseMode,
     parseParts,
     hiddenParts,
+    sectionBounds,
     load,
     persist,
   };
