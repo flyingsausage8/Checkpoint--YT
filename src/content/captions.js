@@ -243,16 +243,30 @@ window.FocusFlow.captions = (() => {
 
   // ---------------------------------------------------------------- strategy A
 
+  // The transcript control is wrapped in several layers (ytd-button-renderer >
+  // yt-button-shape > button) and the page also carries hidden duplicates for
+  // other layouts. Matching the first element whose text says "transcript" lands
+  // on the outermost wrapper, which carries no click handler, so the click is
+  // swallowed and the panel never opens. Only the real <button> works, and only
+  // the visible copy of it.
   function findTranscriptButton() {
     const candidates = document.querySelectorAll(
-      'button, tp-yt-paper-button, yt-button-shape button, ytd-button-renderer, ' +
-        'yt-button-shape, [role="button"], [aria-label]'
+      'button, tp-yt-paper-button, [role="button"], ytd-button-renderer, yt-button-shape, [aria-label]'
     );
+    let fallback = null;
     for (const el of candidates) {
       const label = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`;
-      if (/transcript/i.test(label) && !/close|hide/i.test(label)) return el;
+      if (!/transcript/i.test(label) || /close|hide/i.test(label)) continue;
+      if (!(el.offsetWidth || el.offsetHeight)) continue;
+
+      const clickable =
+        el.matches('button, tp-yt-paper-button, [role="button"]')
+          ? el
+          : el.querySelector('button, tp-yt-paper-button, [role="button"]');
+      if (clickable) return clickable;
+      if (!fallback) fallback = el;
     }
-    return null;
+    return fallback;
   }
 
   // Open the collapsed description (in whatever form today's layout uses) so the
@@ -298,9 +312,31 @@ window.FocusFlow.captions = (() => {
     return findTranscriptButton();
   }
 
+  // YouTube rewrote the transcript panel in 2026: rows used to be
+  // <ytd-transcript-segment-renderer> with .segment-timestamp/.segment-text
+  // children, and are now <transcript-segment-view-model> with generated class
+  // names. Both are listed so the scraper keeps working on whichever layout a
+  // given user is served.
+  const SEGMENT_SELECTOR =
+    'transcript-segment-view-model, ytd-transcript-segment-renderer';
+
+  function segmentParts(segment) {
+    // The new layout carries two timestamp nodes: the visible one and a
+    // screen-reader label reading "9 seconds", which would parse as garbage.
+    const stamp =
+      segment.querySelector('.segment-timestamp')?.textContent ||
+      segment.querySelector(
+        '[class*="Timestamp"]:not([class*="A11y"]):not([class*="a11y"])'
+      )?.textContent;
+    const text =
+      segment.querySelector('.segment-text')?.textContent ||
+      segment.querySelector('[role="text"], [class*="AttributedString"]')?.textContent;
+    return { stamp, text: text?.trim() };
+  }
+
   // Find the scroll container that holds the virtualised transcript rows.
   function transcriptScroller() {
-    const anySegment = document.querySelector('ytd-transcript-segment-renderer');
+    const anySegment = document.querySelector(SEGMENT_SELECTOR);
     if (!anySegment) return null;
     let node = anySegment.parentElement;
     while (node && node !== document.body) {
@@ -311,15 +347,15 @@ window.FocusFlow.captions = (() => {
     }
     return (
       document.querySelector('ytd-transcript-segment-list-renderer #segments-container') ||
-      document.querySelector('ytd-transcript-segment-list-renderer')
+      document.querySelector('ytd-transcript-segment-list-renderer') ||
+      document.querySelector('.ytSectionListRendererContents')
     );
   }
 
   function collectVisibleSegments() {
     const cues = [];
-    for (const segment of document.querySelectorAll('ytd-transcript-segment-renderer')) {
-      const stamp = segment.querySelector('.segment-timestamp')?.textContent;
-      const text = segment.querySelector('.segment-text')?.textContent?.trim();
+    for (const segment of document.querySelectorAll(SEGMENT_SELECTOR)) {
+      const { stamp, text } = segmentParts(segment);
       if (stamp && text) cues.push({ start: parseTimestamp(stamp), text });
     }
     return cues;
@@ -371,7 +407,7 @@ window.FocusFlow.captions = (() => {
       return null;
     }
 
-    const alreadyOpen = document.querySelector('ytd-transcript-segment-renderer');
+    const alreadyOpen = document.querySelector(SEGMENT_SELECTOR);
     if (!alreadyOpen) button.click();
 
     // Opening the panel makes YouTube call /youtubei/v1/get_transcript, which the
@@ -385,7 +421,7 @@ window.FocusFlow.captions = (() => {
 
     const segments = await waitFor(
       () => {
-        const found = document.querySelectorAll('ytd-transcript-segment-renderer');
+        const found = document.querySelectorAll(SEGMENT_SELECTOR);
         return found.length ? found : null;
       },
       { timeout: 12000 }
