@@ -1,0 +1,103 @@
+/*
+ * Focus mode: hides the parts of YouTube that pull people away from the video
+ * they chose to watch.
+ *
+ * Everything here is keyed on a class on <html> (`ff-hide-<partId>`, matching the
+ * ids in src/shared/settings.js). Hiding is therefore pure CSS: turning focus
+ * mode off removes a class and the page is instantly, exactly normal again, with
+ * nothing to undo and no YouTube nodes destroyed. This file is injected at
+ * document_start so the distractions never get painted in the first place.
+ *
+ * `!important` is used throughout because YouTube's own component styles are
+ * more specific than anything we can reasonably write, and because these rules
+ * exist precisely to overrule the page.
+ */
+
+/* --- Home page video wall ------------------------------------------------ */
+/* The grid and its filter chips go; the masthead and search box stay, which is
+   the whole point — you can still go and find the thing you meant to watch. */
+html.ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-rich-grid-renderer > #contents,
+html.ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-rich-grid-renderer > #header,
+html.ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-feed-filter-chip-bar-renderer {
+  display: none !important;
+}
+
+html.ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-rich-grid-renderer::before {
+  /* This message is the only thing on screen that explains where the feed went,
+     because the FocusFlow panel only exists on watch pages. Without it, someone
+     who forgot they turned focus mode on would think YouTube was broken. */
+  content: 'Home feed hidden by FocusFlow — search for what you came for. To bring it back, open any video and switch off "Hide distractions" in the FocusFlow panel.';
+  display: block;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 64px 24px;
+  text-align: center;
+  font-family: 'Roboto', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #606060;
+}
+
+html[dark].ff-hide-homeFeed ytd-browse[page-subtype="home"] ytd-rich-grid-renderer::before {
+  color: #aaa;
+}
+
+/* --- Recommended videos beside the player -------------------------------- */
+/* Only #related, never #secondary: the FocusFlow panel lives in #secondary-inner
+   alongside it, and hiding the column would take our own panel with it. */
+html.ff-hide-related #related {
+  display: none !important;
+}
+
+/* --- Comments ------------------------------------------------------------ */
+html.ff-hide-comments ytd-comments#comments,
+html.ff-hide-comments #comments {
+  display: none !important;
+}
+
+/* --- Shorts -------------------------------------------------------------- */
+/* Shorts appear as their own shelf type in three different layouts, and as
+   ordinary-looking results that happen to link to /shorts. The :has() rules
+   remove the wrapper too, so no empty gap is left behind. */
+html.ff-hide-shorts ytd-rich-section-renderer:has(ytd-rich-shelf-renderer[is-shorts]),
+html.ff-hide-shorts ytd-reel-shelf-renderer,
+html.ff-hide-shorts grid-shelf-view-model:has(ytm-shorts-lockup-view-model),
+html.ff-hide-shorts ytd-rich-item-renderer:has(ytm-shorts-lockup-view-model),
+html.ff-hide-shorts ytd-video-renderer:has(a[href^="/shorts"]),
+html.ff-hide-shorts ytd-compact-video-renderer:has(a[href^="/shorts"]),
+html.ff-hide-shorts ytd-guide-entry-renderer:has(a[href^="/shorts"]),
+html.ff-hide-shorts ytd-mini-guide-entry-renderer:has(a[href^="/shorts"]) {
+  display: none !important;
+}
+
+/* --- Suggestions at the end of, and over, a video ------------------------ */
+/* The grid of other videos when a video finishes, the floating cards near the
+   end, and the panel that slides up over a paused video. */
+html.ff-hide-endScreen .ytp-endscreen-content,
+html.ff-hide-endScreen .ytp-ce-element,
+html.ff-hide-endScreen .ytp-pause-overlay,
+html.ff-hide-endScreen .ytp-suggestion-set,
+html.ff-hide-endScreen .ytp-scroll-min.ytp-suggestion-set {
+  display: none !important;
+}
+
+/* --- Live chat ----------------------------------------------------------- */
+html.ff-hide-liveChat #chat-container,
+html.ff-hide-liveChat ytd-live-chat-frame {
+  display: none !important;
+}
+
+/* --- The menu down the left side ----------------------------------------- */
+/* Both the full drawer and the narrow icon rail. YouTube reserves space for the
+   rail with a margin on the page container, so that has to be reclaimed too or
+   the whole page sits in from the left edge for no reason. */
+html.ff-hide-guide tp-yt-app-drawer#guide,
+html.ff-hide-guide ytd-mini-guide-renderer,
+html.ff-hide-guide #guide-button {
+  display: none !important;
+}
+
+html.ff-hide-guide ytd-app[mini-guide-visible] ytd-page-manager#page-manager,
+html.ff-hide-guide ytd-page-manager#page-manager {
+  margin-left: 0 !important;
+}

@@ -71,13 +71,33 @@ FocusFlow uses the Chrome `tabs` permission so the popup and transcript page can
 - `src/content/ai.js` is dormant support for a future proxy-backed AI mode.
 - `src/content/overlay.js` builds the checkpoint card shown over the video.
 - `src/content/overlay.css` styles the checkpoint card and toast.
+- `src/content/markers.js` draws your checkpoints as dots on YouTube's own progress bar.
+- `src/content/panel.js` and `src/content/panel.css` are the in-page panel at the top of the recommendations column: live progress plus every setting, including focus mode.
+- `src/content/focus.js` and `src/content/focus.css` are focus mode — hiding the distracting parts of YouTube.
 - `src/content/content.js` coordinates video detection, checkpoints, captions, storage status, transcript/progress messages, and popup test messages.
 - `src/popup/popup.html` is the settings, status, transcript, and playback-position popup.
 - `src/popup/popup.js` saves settings, shows status/progress, opens the transcript page, and sends **Test checkpoint now** messages.
 - `src/transcript/transcript.html` and `src/transcript/transcript.js` show the full transcript, search, copy/download, and timestamp seeking.
 - `src/shared/format.js` formats playback times for extension pages.
+- `src/shared/settings.js` is the one definition of a settings object and where it is stored, shared by the panel and focus mode.
 - `icons/` contains the extension icons.
 - `backend/` contains the optional Azure Functions backend for later AI questions.
+
+## Focus mode
+
+Focus mode hides the parts of YouTube that pull you away from the video you chose. It is on by default and is controlled from the FocusFlow panel beside any video.
+
+There are three levels:
+
+- **On** (the default) hides the home page video wall, the recommended videos beside the player, the comments, and Shorts.
+- **Complete focus** also hides the suggestions at the end of a video, live chat, and the menu down the left side.
+- **Customize focus** turns the list into individual switches so you can pick exactly what disappears. While it is on, complete focus is disabled, because the per-item switches are then in charge.
+
+Turning focus mode off puts YouTube back exactly as it was.
+
+Everything is hidden with CSS rules keyed on `ff-hide-<part>` classes that `focus.js` puts on `<html>`. No YouTube elements are ever removed or edited, so switching focus mode off is a complete undo, and a broken selector can only ever fail to hide something — it can never break the page. The hiding rules are injected at `document_start`, so distractions are never painted in the first place.
+
+Adding a new part means editing `FOCUS_PARTS` in `src/shared/settings.js`, adding a rule to `src/content/focus.css`, and adding the id to the two lists that guard syncing: `FOCUS_PART_IDS` in `src/background/sync.js` and in `backend/src/functions/sync.js`. Miss either of those and the setting works on one computer but silently refuses to travel to another.
 
 ## How captions work
 

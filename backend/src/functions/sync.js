@@ -36,7 +36,7 @@ try {
 const SETTINGS_TABLE = 'FocusFlowSettings';
 const SETTINGS_ROW_KEY = 'settings';
 
-// Settings are six small fields; a well-formed body is a few hundred bytes. Cap
+// Settings are a handful of small fields; a well-formed body is a few hundred bytes. Cap
 // well below that generosity so nobody can push a megabyte of JSON into a single
 // table row (Table Storage entities are limited anyway, but we reject early).
 const MAX_BODY_BYTES = 4096;
@@ -72,6 +72,12 @@ const MAX_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
 // server they control. Endpoint configuration must never arrive over the
 // network — it stays local to the device. googleClientId is likewise local
 // identity config, not user preference. Do NOT add either here.
+// The parts of YouTube focus mode can hide. Kept in step with FOCUS_PARTS in
+// src/shared/settings.js. Listing them explicitly (rather than accepting any
+// string) keeps this endpoint from becoming a place to store arbitrary text
+// that is then handed back to every device on the account.
+const FOCUS_PART_IDS = ['homeFeed', 'related', 'comments', 'shorts', 'endScreen', 'liveChat', 'guide'];
+
 const SETTINGS_SCHEMA = {
   enabled: { type: 'boolean' },
   chunkMinutes: { type: 'number', min: 1, max: 60 },
@@ -79,6 +85,8 @@ const SETTINGS_SCHEMA = {
   autoPause: { type: 'boolean' },
   useAI: { type: 'boolean' },
   aiCheckpoints: { type: 'boolean' },
+  focusMode: { type: 'enum', values: ['off', 'standard', 'complete', 'custom'] },
+  focusParts: { type: 'idList', values: FOCUS_PART_IDS, maxLength: 200 },
 };
 
 // Build the real Table Storage client. Kept behind a factory so tests can inject
@@ -378,7 +386,7 @@ async function ensureTable(table) {
   });
 }
 
-// Validate a put payload: the six allowlisted settings (with types/ranges) plus a
+// Validate a put payload: the allowlisted settings (with types/ranges) plus a
 // plausible updatedAt. Unknown keys — including proxyUrl and googleClientId — are
 // simply dropped, never persisted.
 function validatePut(raw, now) {
@@ -410,6 +418,23 @@ function validatePut(raw, now) {
     } else if (rule.type === 'number') {
       if (typeof value !== 'number' || !Number.isFinite(value) || value < rule.min || value > rule.max) {
         return { ok: false, message: `${name} must be a number between ${rule.min} and ${rule.max}.` };
+      }
+      settings[name] = value;
+    } else if (rule.type === 'enum') {
+      if (!rule.values.includes(value)) {
+        return { ok: false, message: `${name} must be one of: ${rule.values.join(', ')}.` };
+      }
+      settings[name] = value;
+    } else if (rule.type === 'idList') {
+      // A comma-separated list of known ids. Unknown entries are rejected rather
+      // than dropped: this value is echoed back to every device on the account,
+      // so it must never be a place to park arbitrary text.
+      if (typeof value !== 'string' || value.length > rule.maxLength) {
+        return { ok: false, message: `${name} must be a string of at most ${rule.maxLength} characters.` };
+      }
+      const parts = value === '' ? [] : value.split(',');
+      if (parts.some((part) => !rule.values.includes(part))) {
+        return { ok: false, message: `${name} must be a comma-separated list of: ${rule.values.join(', ')}.` };
       }
       settings[name] = value;
     }

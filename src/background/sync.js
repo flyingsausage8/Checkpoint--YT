@@ -37,7 +37,16 @@ const SYNC_KEYS = [
   'autoPause',
   'useAI',
   'aiCheckpoints',
+  'focusMode',
+  'focusParts',
 ];
+
+// Kept in step with FOCUS_MODES / FOCUS_PARTS in src/shared/settings.js. The
+// service worker is a module and content scripts are not, so it cannot import
+// that file; an unknown value here is coerced to a safe default rather than
+// trusted, which is what matters — this data arrives from a server.
+const FOCUS_MODES = ['off', 'standard', 'complete', 'custom'];
+const FOCUS_PART_IDS = ['homeFeed', 'related', 'comments', 'shorts', 'endScreen', 'liveChat', 'guide'];
 
 // Debounce pushes so dragging a slider fires one request, not one per pixel.
 const DEBOUNCE_MS = 2500;
@@ -58,9 +67,9 @@ function clampNumber(value, min, max, fallback) {
 }
 
 /**
- * Reduce any settings object to exactly the six syncable fields, coerced the
- * same way content.js coerces them. Producing a stable key order here is what
- * lets us JSON.stringify two settings objects and compare them for equality.
+ * Reduce any settings object to exactly the syncable fields, coerced the same
+ * way content.js coerces them. Producing a stable key order here is what lets
+ * us JSON.stringify two settings objects and compare them for equality.
  */
 function pickSyncable(settings) {
   const s = settings || {};
@@ -74,7 +83,24 @@ function pickSyncable(settings) {
     autoPause: s.autoPause !== false,
     useAI: s.useAI !== false,
     aiCheckpoints: s.aiCheckpoints !== false,
+    focusMode: FOCUS_MODES.includes(s.focusMode) ? s.focusMode : 'standard',
+    focusParts: cleanFocusParts(s.focusParts),
   };
+}
+
+// Sorted and filtered so the same set of parts always produces the same string:
+// pickSyncable's output is compared with JSON.stringify to decide whether
+// anything actually changed, and 'a,b' vs 'b,a' would look like a change and
+// cause an endless push loop between two devices.
+function cleanFocusParts(value) {
+  if (typeof value !== 'string') return '';
+  const chosen = new Set(
+    value
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => FOCUS_PART_IDS.includes(part))
+  );
+  return FOCUS_PART_IDS.filter((part) => chosen.has(part)).join(',');
 }
 
 function settingsKey(sub) {
@@ -133,6 +159,8 @@ async function readAccountSettings(sub) {
     autoPause: true,
     useAI: true,
     aiCheckpoints: true,
+    focusMode: 'standard',
+    focusParts: 'homeFeed,related,comments,shorts',
   });
 }
 

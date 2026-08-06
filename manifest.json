@@ -39,6 +39,19 @@
         "https://www.youtube.com/*"
       ],
       "js": [
+        "src/shared/settings.js",
+        "src/content/focus.js"
+      ],
+      "css": [
+        "src/content/focus.css"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
         "src/shared/format.js",
         "src/content/captions.js",
         "src/content/questionBank.js",

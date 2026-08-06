@@ -9,7 +9,16 @@ const DEFAULT_SETTINGS = {
   useAI: true,
   aiCheckpoints: true,
   proxyUrl: DEFAULT_PROXY_URL,
+  // Focus mode has no controls in the popup — it lives in the on-page panel,
+  // where you can see what it hides. It is listed here so the popup loads and
+  // writes it back untouched instead of dropping it.
+  focusMode: 'standard',
+  focusParts: 'homeFeed,related,comments,shorts',
 };
+
+// The last settings we loaded or saved, used so the popup preserves keys it has
+// no form controls for. See readForm().
+let lastLoaded = { ...DEFAULT_SETTINGS };
 
 const elements = {
   enabled: document.querySelector('#enabled'),
@@ -66,6 +75,11 @@ function setEnabled(enabled) {
 
 function readForm() {
   return {
+    // Spread the settings we loaded first: when signed in, saving replaces the
+    // whole account settings object, so any key this form doesn't know about —
+    // focus mode, or anything a newer version adds — would otherwise be wiped
+    // the first time someone touched a slider in the popup.
+    ...lastLoaded,
     enabled: elements.enabled.getAttribute('aria-pressed') === 'true',
     chunkMinutes: clamp(elements.chunkMinutes.value, 1, 20, DEFAULT_SETTINGS.chunkMinutes),
     minVideoMinutes: Math.max(0, Number(elements.minVideoMinutes.value) || 0),
@@ -77,6 +91,7 @@ function readForm() {
 }
 
 function render(settings) {
+  lastLoaded = { ...lastLoaded, ...settings };
   const chunkMinutes = clamp(settings.chunkMinutes, 1, 20, DEFAULT_SETTINGS.chunkMinutes);
   setEnabled(settings.enabled !== false);
   elements.chunkRange.value = String(chunkMinutes);

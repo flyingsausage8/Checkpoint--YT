@@ -211,3 +211,95 @@ html[dark] .ffp-row input[type="number"] { border-color: rgba(255, 255, 255, 0.2
 }
 
 .ffp-off .ffp-body { opacity: 0.55; }
+
+/* --- focus mode ---------------------------------------------------------- */
+
+.ffp-focus {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+html[dark] .ffp-focus { border-top-color: rgba(255, 255, 255, 0.12); }
+
+.ffp-section-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.ffp-switch-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 8px;
+  margin-bottom: 10px;
+}
+
+.ffp-switch-label { font-size: 13px; font-weight: 500; cursor: pointer; }
+
+/* The hint sits under both columns rather than beside the switch, so a long
+   explanation never squeezes the switch into a different size than its siblings. */
+.ffp-switch-hint { grid-column: 1 / -1; }
+
+.ffp-switch {
+  min-width: 52px;
+  padding: 4px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 999px;
+  background: #06b6d4;
+  color: #04212a;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ffp-switch.ffp-switch-off {
+  border-color: rgba(0, 0, 0, 0.14);
+  background: transparent;
+  color: inherit;
+  font-weight: 500;
+}
+
+html[dark] .ffp-switch.ffp-switch-off { border-color: rgba(255, 255, 255, 0.2); }
+
+.ffp-switch:not(:disabled):hover { background: #22d3ee; }
+
+.ffp-switch.ffp-switch-off:not(:disabled):hover { background: rgba(0, 0, 0, 0.06); }
+
+html[dark] .ffp-switch.ffp-switch-off:not(:disabled):hover { background: rgba(255, 255, 255, 0.1); }
+
+.ffp-switch:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Sliding sections. max-height is set in JS from the measured content height,
+   because `auto` and `none` cannot be transitioned. */
+.ffp-slide {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.25s ease, opacity 0.25s ease;
+}
+
+.ffp-slide.ffp-slide-open { opacity: 1; }
+
+/* The nested part list is indented so it clearly belongs to "Customize focus"
+   rather than reading as three more top-level switches. */
+.ffp-parts .ffp-slide-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 2px 0 10px;
+  padding: 10px 0 2px 12px;
+  border-left: 2px solid #06b6d4;
+}
+
+html[dark] .ffp-parts .ffp-slide-inner { border-left-color: #22d3ee; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ffp-slide { transition: none; }
+}
