@@ -37,6 +37,19 @@ Open the FocusFlow popup while on a YouTube watch page. The **Current video stat
   - `none` means no captions were found, so FocusFlow uses hardcoded self-check questions.
 - **Cues**: how many transcript snippets were extracted.
 
+### Console logging
+
+Open the browser console on a watch page (F12) and every request is reported as it lands:
+
+```
+[FocusFlow] ✓ window 1/3 (0:00–8:55) ok: 3 section(s), 9978 chars sent
+[FocusFlow] ✗ window 2/3 (8:55–17:42) FAILED after 2 attempts: the request timed out
+                                        — no checkpoints for this stretch
+[FocusFlow] segmentation done: 2/3 windows ok, 5 section(s), 29507 chars sent
+```
+
+A transcript too large to send at once goes out as several requests, and each one covers a stretch of the video. If one fails, that stretch gets no checkpoints — so the log names the exact time range affected rather than just saying something went wrong. Failures that are about the trip rather than the request (a timeout, a dropped connection, a 5xx, or Chrome shutting the background worker down mid-request) are retried once before being given up on; a rejected or rate-limited request is not, because it would fail the same way twice.
+
 ## What to try breaking
 
 - A video with captions.

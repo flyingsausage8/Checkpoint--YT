@@ -40,6 +40,22 @@ window.FocusFlow.ai = (() => {
   // only pushes the limit further out of reach.
   const RETRYABLE_ERRORS = new Set(['timeout', 'network', 'http_500', 'http_502', 'http_503', 'http_504']);
 
+  /**
+   * Is this failure about the trip rather than the request?
+   *
+   * Chrome is free to shut the background service worker down mid-request, which
+   * surfaces as a closed message port rather than an error code. Like a timeout,
+   * it says nothing about whether the request was any good, so it earns a second
+   * attempt. A 400, 403, 413 or 429 does not: those fail identically twice.
+   */
+  function isRetryable(error) {
+    if (RETRYABLE_ERRORS.has(error)) return true;
+    return typeof error === 'string' && /message (port|channel) closed/i.test(error);
+  }
+
+  // Window logging is about a place in the video, so seconds are useless to read.
+  const clock = (seconds) => window.FocusFlowFormat.formatTime(seconds);
+
   // Turns an internal reason/error code into a short, human-readable sentence so
   // console warnings tell the owner what actually happened instead of `http_502`.
   function describeError(code) {
@@ -246,12 +262,16 @@ window.FocusFlow.ai = (() => {
       if (typeof onRequestSent === 'function') {
         onRequestSent({ mode: 'questions', windowIndex: batchIndex, totalWindows: batches.length, chars });
       }
+      const span = `${clock(batch[0]?.startSeconds)}–${clock(batch[batch.length - 1]?.endSeconds)}`;
+      const where = `batch ${batchIndex}/${batches.length} (${span}, ${batch.length} section(s))`;
       const result = await askBackground({ videoId, title, chunks: batch });
+      let retried = false;
       if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
-        if (RETRYABLE_ERRORS.has(result?.error)) {
-          console.warn('[FocusFlow] retrying question batch after ' + describeError(result.error));
+        if (isRetryable(result?.error)) {
+          console.warn(`[FocusFlow] ${where} ${describeError(result.error)} — retrying once`);
           const retry = await askBackground({ videoId, title, chunks: batch });
+          retried = true;
           if (retry?.ok) {
             Object.assign(result, retry);
           }
@@ -259,7 +279,10 @@ window.FocusFlow.ai = (() => {
       }
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
-        console.warn('[FocusFlow] AI batch failed:', describeError(lastError));
+        console.warn(
+          `[FocusFlow] ✗ ${where} FAILED after ${retried ? '2 attempts' : '1 attempt'}: ` +
+            `${describeError(lastError)} — no questions for these sections`
+        );
         continue;
       }
 
@@ -274,10 +297,15 @@ window.FocusFlow.ai = (() => {
       const validated = window.FocusFlow.validate.questions(result.questions, batch.length);
       if (!validated) {
         lastError = result.reason || 'invalid_output';
-        console.warn('[FocusFlow] AI batch unusable:', describeError(lastError));
+        console.warn(
+          `[FocusFlow] ✗ ${where} came back unusable: ${describeError(lastError)} — no questions for these sections`
+        );
         continue;
       }
-
+      console.log(
+        `[FocusFlow] ✓ ${where} ok${retried ? ' (on retry)' : ''}: ` +
+          `${validated.length} question(s), ${chars} chars sent`
+      );
       validated.forEach((question, position) => {
         // Prefer the chunk index the backend tagged; fall back to batch order.
         const chunkIndex = Number.isInteger(question.index)
@@ -414,17 +442,23 @@ window.FocusFlow.ai = (() => {
         onRequestSent({ mode: 'segment', windowIndex: i + 1, totalWindows, chars });
       }
       let result = await askSegment(request);
+      let retried = false;
 
       // A window that fails takes its whole time range down with it — several
       // minutes of video left with no checkpoints — and timeouts and transient
       // 5xx are common enough to be worth one more go. Only retry failures that
       // could plausibly succeed on a second attempt: a rejected payload or a
       // rate limit will fail identically, and retrying a 429 makes it worse.
-      if (!result?.ok && RETRYABLE_ERRORS.has(result?.error)) {
-        console.warn('[FocusFlow] retrying segment window after ' + describeError(result.error));
+      if (!result?.ok && isRetryable(result?.error)) {
+        console.warn(
+          `[FocusFlow] window ${i + 1}/${totalWindows} (${clock(win.windowStart)}–${clock(
+            win.windowEnd
+          )}) ${describeError(result.error)} — retrying once`
+        );
         result = await askSegment(request);
+        retried = true;
       }
-      return { win, chars, result };
+      return { win, chars, result, retried, position: i + 1 };
     });
 
     const collected = [];
@@ -441,12 +475,16 @@ window.FocusFlow.ai = (() => {
       windows: 0,
     };
 
-    for (const { win, chars, result } of results) {
+    for (const { win, chars, result, retried, position } of results) {
+      const where = `window ${position}/${totalWindows} (${clock(win.windowStart)}–${clock(win.windowEnd)})`;
       charsSent += chars;
       if (result?.endpoint) endpoint = result.endpoint;
       if (!result?.ok) {
         lastError = result?.error || 'unknown';
-        console.warn('[FocusFlow] segment window failed:', describeError(lastError));
+        console.warn(
+          `[FocusFlow] ✗ ${where} FAILED after ${retried ? '2 attempts' : '1 attempt'}: ` +
+            `${describeError(lastError)} — no checkpoints for this stretch`
+        );
         failedWindows.push({ windowStart: win.windowStart, windowEnd: win.windowEnd });
         continue;
       }
@@ -462,10 +500,16 @@ window.FocusFlow.ai = (() => {
       const validated = window.FocusFlow.validate.sections(result.sections);
       if (!validated) {
         lastError = result.reason || 'invalid_output';
-        console.warn('[FocusFlow] segment window unusable:', describeError(lastError));
+        console.warn(
+          `[FocusFlow] ✗ ${where} came back unusable: ${describeError(lastError)} — no checkpoints for this stretch`
+        );
         failedWindows.push({ windowStart: win.windowStart, windowEnd: win.windowEnd });
         continue;
       }
+      console.log(
+        `[FocusFlow] ✓ ${where} ok${retried ? ' (on retry)' : ''}: ` +
+          `${validated.length} section(s), ${chars} chars sent`
+      );
       collected.push(...validated);
     }
 
@@ -477,6 +521,11 @@ window.FocusFlow.ai = (() => {
       diagnostics,
       returned: collected.length,
     };
+
+    console.log(
+      `[FocusFlow] segmentation done: ${totalWindows - failedWindows.length}/${totalWindows} windows ok, ` +
+        `${collected.length} section(s), ${charsSent} chars sent`
+    );
 
     if (!collected.length) {
       return { sections: null, reason: lastError || 'no_sections', trace, failedWindows, totalWindows };

@@ -88,7 +88,44 @@ async function openTab(url) {
     method: 'PUT',
   });
   const tab = await res.json();
-  return Session.attach(tab.webSocketDebuggerUrl);
+  const session = await Session.attach(tab.webSocketDebuggerUrl);
+  // Remember which tab this is so it can actually be closed later. Without it
+  // session.close() only drops the debugger connection and leaves the tab
+  // behind, still playing video — a test run then piles up dozens of them.
+  session.targetId = tab.id;
+  return session;
+}
+
+/**
+ * Close the tab a session is attached to, not just the connection to it.
+ * Always call this at the end of a script, including on the failure path.
+ */
+async function closeTab(session) {
+  if (!session) return;
+  try {
+    if (session.targetId) {
+      await fetch(`${CDP_HTTP}/json/close/${session.targetId}`);
+    }
+  } catch (_) {
+    /* the tab may already be gone */
+  }
+  session.close();
+}
+
+/** Close every open YouTube tab. Cleanup for scripts that died mid-run. */
+async function closeAllVideoTabs() {
+  const targets = await listTargets();
+  const videos = targets.filter(
+    (t) => t.type === 'page' && /youtube\.com|chrome-extension:\/\//.test(t.url || '')
+  );
+  for (const target of videos) {
+    try {
+      await fetch(`${CDP_HTTP}/json/close/${target.id}`);
+    } catch (_) {
+      /* already gone */
+    }
+  }
+  return videos.length;
 }
 
 /** Open an extension page, which is the only place chrome.* APIs are reachable. */
@@ -132,6 +169,8 @@ module.exports = {
   Session,
   browserSession,
   openTab,
+  closeTab,
+  closeAllVideoTabs,
   openExtensionPage,
   listTargets,
   evaluate,
