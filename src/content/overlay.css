@@ -72,21 +72,35 @@
   background: #3f3f46;
 }
 
-.ff-choices[data-answered] .ff-choice {
+.ff-choices[data-revealed] .ff-choice {
   cursor: default;
   opacity: 0.65;
 }
 
-.ff-choices[data-answered] .ff-choice.ff-correct {
+.ff-choices[data-revealed] .ff-choice.ff-correct {
   opacity: 1;
   border-color: #22c55e;
   background: rgba(34, 197, 94, 0.18);
 }
 
-.ff-choices[data-answered] .ff-choice.ff-wrong {
+/* A calm amber, not an alarm red: the viewer still sees which one they picked
+   without the sting. The green .ff-correct is what actually carries the signal. */
+.ff-choices[data-revealed] .ff-choice.ff-wrong {
   opacity: 1;
-  border-color: #ef4444;
-  background: rgba(239, 68, 68, 0.18);
+  border-color: #a16207;
+  background: rgba(161, 98, 7, 0.15);
+}
+
+/* A choice retired after a first wrong pick: dimmed and struck through so it
+   reads as spent, and click handling ignores it. */
+.ff-choice.ff-retired {
+  opacity: 0.4;
+  text-decoration: line-through;
+  cursor: default;
+}
+
+.ff-choice.ff-retired:hover {
+  background: #27272a;
 }
 
 .ff-feedback {
@@ -96,7 +110,8 @@
 }
 
 .ff-feedback.ff-good { color: #4ade80; }
-.ff-feedback.ff-bad { color: #fca5a5; }
+.ff-feedback.ff-bad { color: #d4d4d8; }
+.ff-feedback.ff-hint { color: #d4d4d8; }
 
 .ff-actions {
   display: flex;

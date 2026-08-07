@@ -44,7 +44,14 @@ window.FocusFlow.validate = (() => {
     if (note.length > 200) return null;
     if (containsDangerousString([prompt, note, ...choices])) return null;
 
-    return { type: item.type, prompt, choices, answerIndex, note };
+    const result = { type: item.type, prompt, choices, answerIndex, note };
+    // Issue #9: the absolute second where the answer is stated, used by the
+    // overlay's "Show me where" replay. Optional: old cached questions and
+    // offline questions may not carry it, so it is only added when finite.
+    if (Number.isFinite(Number(item.answerSeconds))) {
+      result.answerSeconds = Number(item.answerSeconds);
+    }
+    return result;
   }
 
   function questions(raw, expectedCount) {

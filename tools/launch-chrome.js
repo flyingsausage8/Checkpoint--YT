@@ -39,6 +39,10 @@ const child = spawn(
     '--remote-allow-origins=*',
     '--no-first-run',
     '--no-default-browser-check',
+    // Checkpoints only fire while the video is actually playing, and Chrome
+    // otherwise refuses a scripted play() without a user gesture, which makes
+    // playback-dependent behaviour untestable from CDP.
+    '--autoplay-policy=no-user-gesture-required',
   ],
   { detached: true, stdio: 'ignore' }
 );

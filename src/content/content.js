@@ -327,8 +327,21 @@
         startSeconds,
         endSeconds: checkpoint,
         text: window.FocusFlow.captions.textBetween(cues, startSeconds, checkpoint),
+        // Issue #9: per-line timestamps let the backend name the exact second an
+        // answer is stated, powering the overlay's "Show me where" replay.
+        lines: linesBetween(cues, startSeconds, checkpoint),
       };
     });
+  }
+
+  // Timestamped transcript lines for a section, in the { t, text } shape the
+  // backend expects. Mirrors captions.textBetween's window but keeps each cue's
+  // start time instead of flattening everything into one blob.
+  function linesBetween(cues, fromSeconds, toSeconds) {
+    return (cues || [])
+      .filter((cue) => cue.start >= fromSeconds && cue.start < toSeconds)
+      .map((cue) => ({ t: Math.max(0, Math.round(cue.start)), text: String(cue.text || '').trim() }))
+      .filter((line) => line.text);
   }
 
   function wordCount(text) {
@@ -616,6 +629,7 @@
           // Last line of defence: a section that survived every split above and
           // is still enormous gets trimmed rather than failing the whole batch.
           .slice(0, MAX_CHAPTER_CHARS),
+        lines: linesBetween(cues, entry.section.startSeconds, entry.section.endSeconds),
       }));
       const result = await window.FocusFlow.ai.generateForVideo({ videoId, title, chunks, onRequestSent });
       (result?.questions || []).forEach((question, i) => {
@@ -747,10 +761,34 @@
   function offlineQuestion(videoId, cues, previousCheckpoint, checkpoint, duration) {
     const chunkText = window.FocusFlow.captions.textBetween(cues, previousCheckpoint, checkpoint);
     const otherChunksText = outsideText(cues, previousCheckpoint, checkpoint, duration);
-    return validatedQuestion(
+    const question = validatedQuestion(
       window.FocusFlow.questions.generate(chunkText, otherChunksText, videoId),
       videoId
     );
+    // Offline questions get no timestamp from a model. When the correct answer is
+    // a phrase lifted straight from the captions (the multiple-choice case), the
+    // cue that first says it is an honest "Show me where" target; otherwise we
+    // leave it null and the overlay falls back to rewatching the whole section.
+    const answerSeconds = offlineAnswerSeconds(question, cues, previousCheckpoint, checkpoint);
+    return answerSeconds === null ? question : { ...question, answerSeconds };
+  }
+
+  // Only claim a timestamp we can stand behind: the correct multiple-choice
+  // answer is a phrase taken verbatim from this section, so the first cue that
+  // contains it genuinely says the answer. True/false statements span several
+  // cues, so there is no single honest cue to point at and we return null.
+  function offlineAnswerSeconds(question, cues, fromSeconds, toSeconds) {
+    if (!question || question.type !== 'mc') return null;
+    const answer = question.choices?.[question.answerIndex];
+    if (!answer) return null;
+    const needle = String(answer).toLowerCase();
+    const cue = (cues || []).find(
+      (c) =>
+        c.start >= fromSeconds &&
+        c.start < toSeconds &&
+        String(c.text || '').toLowerCase().includes(needle)
+    );
+    return cue ? Math.max(0, Math.round(cue.start)) : null;
   }
 
   async function writeStatus(status) {
@@ -814,6 +852,19 @@
           window.FocusFlow.markers?.markPending(index);
           video.currentTime = previousCheckpoint;
           lastTime = previousCheckpoint;
+        } else if (result === 'replay' && Number.isFinite(question.answerSeconds)) {
+          // "Show me where": jump back to just before the answer was stated,
+          // with ~5s of lead-in for context, but never before this section's
+          // start. Unlike "rewatch", the checkpoint stays SATISFIED — we keep
+          // `index` in `answered` and mark the dot done, so passing the
+          // checkpoint again does not re-ask. Setting `lastTime` to the seek
+          // target (which sits below the checkpoint) is what stops onTimeUpdate
+          // from reading this backward jump as a rewind and re-arming the
+          // checkpoint we just cleared.
+          const replayStart = Math.max(0, previousCheckpoint, question.answerSeconds - 5);
+          window.FocusFlow.markers?.markDone(index);
+          video.currentTime = replayStart;
+          lastTime = replayStart;
         } else if (manual) {
           answered.delete(index);
           window.FocusFlow.markers?.markPending(index);
