@@ -813,8 +813,22 @@
 
   function setupTimeListener(videoId, video, checkpoints, transcript, settings, token, aiQuestions, sectionTitles, durationSeconds) {
     const answered = new Set();
-    let lastTime = video.currentTime || 0;
+    let lastTime = 0;
     let overlayOpen = false;
+
+    // True whenever the media element is not playing the video we planned for:
+    // an ad, or metadata not loaded yet. Mirrors markers.js's isOffPlan so the
+    // dots and the checkpoint watcher agree about when an ad is on screen.
+    function isOffPlan() {
+      const playing = Number(video?.duration);
+      if (!Number.isFinite(playing) || playing <= 0) return true;
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return false;
+      return Math.abs(playing - durationSeconds) > 2;
+    }
+
+    // Seed from the element only when it is really our video: setting up during
+    // a pre-roll would otherwise seed the ad's clock as the starting point.
+    lastTime = isOffPlan() ? 0 : (video.currentTime || 0);
 
     async function showCheckpoint(index, { manual = false } = {}) {
       if (token.cancelled || overlayOpen || index < 0 || index >= checkpoints.length) return false;
@@ -889,6 +903,18 @@
 
     const onTimeUpdate = () => {
       if (token.cancelled || overlayOpen || !checkpoints.length) return;
+
+      // While an ad plays it uses this same media element, so `currentTime` is
+      // the ad's clock counting up from zero. Left unguarded that clock walks
+      // straight through the early checkpoints and fires a question over the
+      // ad, and a mid-roll drop back to zero reads as a rewind and re-arms
+      // every question already answered.
+      //
+      // Detect it by duration, not by YouTube's `ad-showing` class: markers.js
+      // documents that the class and the ad overlay elements both go stale and
+      // linger after the ad ends, which would suppress real checkpoints. The
+      // element's duration is honest — during an ad it reports the ad's length.
+      if (isOffPlan()) return;
 
       const currentTime = video.currentTime || 0;
       window.FocusFlow.markers?.setCurrentTime(currentTime);
