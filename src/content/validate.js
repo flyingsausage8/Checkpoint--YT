@@ -18,6 +18,47 @@ window.FocusFlow.validate = (() => {
     return values.some((value) => DANGEROUS.test(value));
   }
 
+  // A tiny seeded PRNG (xmur3 seed -> mulberry32-style generator). We shuffle in
+  // code rather than trusting the model to randomise, but validation runs in more
+  // than one place - on freshly generated questions, on cache restore, and on
+  // later rebuilds - so a Math.random() shuffle would reorder the same question
+  // between page loads and make the answer appear to move when a viewer rewatches.
+  // Seeding from the question's stable identity keeps the order deterministic.
+  function seededRandom(seedText) {
+    let h = 1779033703 ^ seedText.length;
+    for (let i = 0; i < seedText.length; i++) {
+      h = Math.imul(h ^ seedText.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    return function next() {
+      h = Math.imul(h ^ (h >>> 16), 2246822507);
+      h = Math.imul(h ^ (h >>> 13), 3266489909);
+      h ^= h >>> 16;
+      return h >>> 0;
+    };
+  }
+
+  // Permutes multiple-choice options so the correct answer is not always first,
+  // and remaps answerIndex to follow it. The permutation is applied to the choices
+  // in sorted order rather than the order they arrived in, which makes this
+  // idempotent: re-validating an already-shuffled question (which happens on every
+  // cache restore) reproduces the same arrangement instead of shuffling it again.
+  function shuffleChoices(prompt, choices, answerIndex) {
+    const answerText = choices[answerIndex];
+    const canonical = [...choices].sort();
+    const seedText = `${prompt}\u0000${canonical.join('\u0001')}`;
+    const rand = seededRandom(seedText);
+    const order = canonical.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = rand() % (i + 1);
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    return {
+      choices: order.map((i) => canonical[i]),
+      answerIndex: order.indexOf(canonical.indexOf(answerText)),
+    };
+  }
+
   function normaliseItem(item) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
     if (item.type !== 'mc' && item.type !== 'tf') return null;
@@ -44,7 +85,19 @@ window.FocusFlow.validate = (() => {
     if (note.length > 200) return null;
     if (containsDangerousString([prompt, note, ...choices])) return null;
 
-    const result = { type: item.type, prompt, choices, answerIndex, note };
+    // True/false must read as "True" then "False"; a shuffled one looks broken.
+    // Detect it robustly - offline and AI questions do not populate `type`
+    // identically - and leave it untouched. Everything else is permuted so a
+    // viewer cannot pass by blindly clicking the first option.
+    let finalChoices = choices;
+    let finalAnswerIndex = answerIndex;
+    if (item.type !== 'tf' && choices.length > 2) {
+      const shuffled = shuffleChoices(prompt, choices, answerIndex);
+      finalChoices = shuffled.choices;
+      finalAnswerIndex = shuffled.answerIndex;
+    }
+
+    const result = { type: item.type, prompt, choices: finalChoices, answerIndex: finalAnswerIndex, note };
     // Issue #9: the absolute second where the answer is stated, used by the
     // overlay's "Show me where" replay. Optional: old cached questions and
     // offline questions may not carry it, so it is only added when finite.
